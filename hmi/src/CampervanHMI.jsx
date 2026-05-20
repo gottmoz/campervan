@@ -47,9 +47,15 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { camperAgentBridge } from "./integrations/camperAgentBridge";
 
 // Clean Ford Transit campervan background only. Do not use a full GUI mockup here.
 const VAN_BACKGROUND_URL = "assets/ford-transit-clean-bg.png";
+
+const DEFAULT_BMS = {
+  profile: { displayName: "PUPVWMHB 12V 320Ah LiFePO4 250A BMS", capacityAh: 320, nominalVoltage: 12.8, bmsContinuousCurrentAmp: 250 },
+  telemetry: { socPercent: 87, voltage: 13.2, current: -18, powerWatts: -238, remainingCapacityAh: 278.4, chargeAllowed: true, dischargeAllowed: true, warnings: [], alarms: [], source: "simulator_fallback", protocol: "PUPVWMHB discovery pending" },
+};
 
 const tabs = [
   { id: "home", label: "Home", icon: Home },
@@ -277,11 +283,14 @@ function SideNav({ activeTab, setActiveTab }) {
 }
 
 function HomeView({ state, setters, openEnergyStats }) {
+  const bms = state.batteryBms?.telemetry ?? {};
+  const batterySoc = Math.round(bms.socPercent ?? state.battery);
+  const batterySub = bms.voltage && bms.current ? `${bms.voltage.toFixed(1)}V / ${bms.current.toFixed(0)}A` : "BMS pending";
   return (
     <div className="grid h-full grid-cols-[1.15fr_0.85fr] gap-4">
       <div className="grid grid-rows-[auto_1fr] gap-4">
         <div className="grid grid-cols-4 gap-3">
-          <MiniStatus icon={BatteryCharging} label="Battery" value={`${state.battery}%`} sub="13.4V / 18A" />
+          <MiniStatus icon={BatteryCharging} label="Battery" value={`${batterySoc}%`} sub={batterySub} />
           <button onClick={openEnergyStats} className="text-left transition hover:scale-[1.02] active:scale-[0.99]">
             <MiniStatus icon={SolarPanel} label="Solar" value="326 W" sub="Tap for daily graph" />
           </button>
@@ -340,7 +349,7 @@ function HomeView({ state, setters, openEnergyStats }) {
 
       <div className="grid grid-rows-[1fr_auto] gap-4">
         <GlassCard className="p-5">
-          <CircularGauge value={state.battery} label="Aux battery" unit="% SOC" icon={BatteryCharging} />
+          <CircularGauge value={batterySoc} label="PUPVWMHB LiFePO4" unit="% SOC" icon={BatteryCharging} />
           <div className="mt-5 grid grid-cols-2 gap-3">
             <MiniStatus icon={Gauge} label="Range" value="2.8 days" sub="At current load" />
             <MiniStatus icon={PlugZap} label="Load" value="184 W" sub="12V + 230V" />
@@ -366,10 +375,13 @@ function HomeView({ state, setters, openEnergyStats }) {
 }
 
 function PowerView({ state, setters, openEnergyStats }) {
+  const bms = state.batteryBms?.telemetry ?? {};
+  const batterySoc = Math.round(bms.socPercent ?? state.battery);
   return (
     <div className="grid h-full grid-cols-[0.9fr_1.1fr] gap-4">
       <GlassCard className="p-5">
-        <CircularGauge value={state.battery} label="Battery bank" unit="%" icon={BatteryCharging} />
+        <CircularGauge value={batterySoc} label="LiFePO4 320Ah" unit="%" icon={BatteryCharging} />
+        <div className="mt-1 text-sm text-slate-400">320Ah / 250A BMS</div>
         <div className="mt-5 space-y-3">
           <RangeControl label="Charge limit" value={setters.chargeLimit ?? 90} setValue={setters.setChargeLimit} min={50} max={100} unit="%" icon={BatteryCharging} />
           <ToggleRow icon={PlugZap} label="230V Inverter" sub="Pure sine / outlet group A" on={state.inverter} setOn={setters.setInverter} />
@@ -379,7 +391,7 @@ function PowerView({ state, setters, openEnergyStats }) {
       <div className="grid grid-rows-[auto_1fr] gap-4">
         <div className="grid grid-cols-4 gap-3">
           <MiniStatus icon={SolarPanel} label="PV Input" value="326 W" sub="24.8V" />
-          <MiniStatus icon={CarFront} label="DC-DC" value="0 W" sub="Engine off" />
+          <MiniStatus icon={CarFront} label="Renogy 40A" value="0 W" sub="Engine off" />
           <MiniStatus icon={PlugZap} label="Shore" value="No" sub="Disconnected" />
           <MiniStatus icon={Zap} label="Output" value="184 W" sub="Stable" />
         </div>
@@ -396,7 +408,7 @@ function PowerView({ state, setters, openEnergyStats }) {
               <FlowNode className="relative left-auto top-auto" icon={SolarPanel} label="Solar" value="326 W / stats" />
             </button>
             <FlowNode className="left-8 bottom-10" icon={PlugZap} label="Shore" value="0 W" muted />
-            <FlowNode className="left-[310px] top-[102px]" icon={BatteryCharging} label="LiFePO₄" value={`${state.battery}%`} primary />
+            <FlowNode className="left-[310px] top-[102px]" icon={BatteryCharging} label="LiFePO4 320Ah" value={`${batterySoc}%`} primary />
             <FlowNode className="right-8 top-10" icon={Refrigerator} label="Fridge" value="42 W" />
             <FlowNode className="right-8 bottom-10" icon={LampCeiling} label="Cabin" value="38 W" />
             <AnimatedLine x1="170px" y1="72px" x2="310px" y2="137px" />
@@ -602,23 +614,24 @@ function LightsView({ state, setters }) {
 
 function EnergyStatsModal({ onClose }) {
   const chargeData = [
-    { day: "Mon", solar: 2.8, landline: 0.0, carCharge: 0.4, battery: 74 },
-    { day: "Tue", solar: 3.4, landline: 0.0, carCharge: 0.2, battery: 81 },
-    { day: "Wed", solar: 1.9, landline: 1.6, carCharge: 0.0, battery: 87 },
-    { day: "Thu", solar: 4.2, landline: 0.0, carCharge: 0.6, battery: 94 },
-    { day: "Fri", solar: 2.6, landline: 2.1, carCharge: 0.0, battery: 96 },
-    { day: "Sat", solar: 5.1, landline: 0.0, carCharge: 0.3, battery: 100 },
-    { day: "Sun", solar: 3.7, landline: 0.8, carCharge: 0.6, battery: 92 },
+    { day: "Mon", solar: 2.8, landline: 0.0, renogy: 0.4, orion: 0.2, battery: 74 },
+    { day: "Tue", solar: 3.4, landline: 0.0, renogy: 0.2, orion: 0.1, battery: 81 },
+    { day: "Wed", solar: 1.9, landline: 1.6, renogy: 0.0, orion: 0.2, battery: 87 },
+    { day: "Thu", solar: 4.2, landline: 0.0, renogy: 0.6, orion: 0.3, battery: 94 },
+    { day: "Fri", solar: 2.6, landline: 2.1, renogy: 0.0, orion: 0.1, battery: 96 },
+    { day: "Sat", solar: 5.1, landline: 0.0, renogy: 0.3, orion: 0.2, battery: 100 },
+    { day: "Sun", solar: 3.7, landline: 0.8, renogy: 0.6, orion: 0.2, battery: 92 },
   ];
 
   const totals = chargeData.reduce(
     (acc, item) => ({
       solar: acc.solar + item.solar,
       landline: acc.landline + item.landline,
-      carCharge: acc.carCharge + item.carCharge,
-      total: acc.total + item.solar + item.landline + item.carCharge,
+      renogy: acc.renogy + item.renogy,
+      orion: acc.orion + item.orion,
+      total: acc.total + item.solar + item.landline + item.renogy + item.orion,
     }),
-    { solar: 0, landline: 0, carCharge: 0, total: 0 }
+    { solar: 0, landline: 0, renogy: 0, orion: 0, total: 0 }
   );
 
   return (
@@ -656,7 +669,7 @@ function EnergyStatsModal({ onClose }) {
               <div className="mb-3 flex items-center justify-between">
                 <div>
                   <div className="text-sm font-bold text-white">Charge per day</div>
-                  <div className="text-xs text-slate-400">kWh generated from solar, landline and car charge</div>
+                  <div className="text-xs text-slate-400">kWh generated from SmartSolar, shore, Renogy and Orion</div>
                 </div>
                 <div className="rounded-full bg-cyan-300/10 px-3 py-1 text-xs font-bold text-cyan-100">kWh</div>
               </div>
@@ -669,7 +682,8 @@ function EnergyStatsModal({ onClose }) {
                   <Legend />
                   <Bar dataKey="solar" name="Solar" fill="#22d3ee" radius={[8, 8, 0, 0]} />
                   <Bar dataKey="landline" name="Landline" fill="#a78bfa" radius={[8, 8, 0, 0]} />
-                  <Bar dataKey="carCharge" name="Car Charge" fill="#fbbf24" radius={[8, 8, 0, 0]} />
+                  <Bar dataKey="renogy" name="Renogy 40A" fill="#fbbf24" radius={[8, 8, 0, 0]} />
+                  <Bar dataKey="orion" name="Orion 18A" fill="#34d399" radius={[8, 8, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -688,7 +702,7 @@ function EnergyStatsModal({ onClose }) {
                   <XAxis dataKey="day" stroke="rgba(226,232,240,0.55)" tickLine={false} axisLine={false} />
                   <YAxis stroke="rgba(226,232,240,0.55)" tickLine={false} axisLine={false} domain={[50, 100]} />
                   <Tooltip contentStyle={{ background: "#020617", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 16, color: "#fff" }} />
-                  <Line type="monotone" dataKey="battery" name="Battery %" stroke="#67e8f9" strokeWidth={4} dot={{ r: 4 }} activeDot={{ r: 7 }} />
+                  <Line type="monotone" dataKey="battery" name="BMS SOC" stroke="#67e8f9" strokeWidth={4} dot={{ r: 4 }} activeDot={{ r: 7 }} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -707,14 +721,14 @@ function EnergyStatsModal({ onClose }) {
               <div className="text-sm text-slate-300">kWh from shore power</div>
             </div>
             <div className="rounded-3xl border border-amber-200/20 bg-amber-300/10 p-4">
-              <div className="flex items-center gap-3 text-amber-100"><CarFront size={24} /><span className="text-sm font-bold uppercase tracking-[0.18em]">Car charge</span></div>
-              <div className="mt-3 text-3xl font-black text-white">{totals.carCharge.toFixed(1)}</div>
-              <div className="text-sm text-slate-300">kWh from alternator</div>
+              <div className="flex items-center gap-3 text-amber-100"><CarFront size={24} /><span className="text-sm font-bold uppercase tracking-[0.18em]">Renogy 40A</span></div>
+              <div className="mt-3 text-3xl font-black text-white">{totals.renogy.toFixed(1)}</div>
+              <div className="text-sm text-slate-300">kWh from alternator charger</div>
             </div>
             <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4">
-                <div className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">Total charging</div>
-                <div className="mt-3 text-3xl font-black text-white">{totals.total.toFixed(1)}</div>
-                <div className="text-sm text-slate-300">kWh combined</div>
+                <div className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">Orion 18A</div>
+                <div className="mt-3 text-3xl font-black text-white">{totals.orion.toFixed(1)}</div>
+                <div className="text-sm text-slate-300">kWh auxiliary DC/DC</div>
               </div>
             </div>
             <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-5">
@@ -731,7 +745,182 @@ function EnergyStatsModal({ onClose }) {
   );
 }
 
-function SystemsView({ state, setters }) {
+function ModalShell({ title, subtitle, icon: Icon, onClose, children }) {
+  return (
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 p-6 backdrop-blur-md" onClick={onClose}>
+      <motion.div initial={{ opacity: 0, y: 28, scale: 0.96 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: 18, scale: 0.97 }} transition={{ type: "spring", stiffness: 260, damping: 24 }} onClick={(event) => event.stopPropagation()} className="h-[520px] w-[900px] overflow-hidden rounded-[2rem] border border-white/10 bg-slate-950/95 shadow-2xl shadow-black">
+        <div className="flex items-center justify-between border-b border-white/10 px-6 py-4">
+          <div className="flex items-center gap-3">
+            <div className="rounded-2xl bg-cyan-300/15 p-3 text-cyan-100"><Icon size={26} /></div>
+            <div><div className="text-2xl font-black text-white">{title}</div><div className="text-sm text-slate-400">{subtitle}</div></div>
+          </div>
+          <button onClick={onClose} className="rounded-2xl bg-white/[0.07] p-3 text-slate-300 transition hover:bg-white/[0.12] hover:text-white"><X size={22} /></button>
+        </div>
+        <div className="h-[448px] overflow-hidden p-5">{children}</div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function ReadOnlyBadge() {
+  return <span className="rounded-full border border-emerald-200/20 bg-emerald-300/10 px-3 py-1 text-xs font-black text-emerald-100">READ-ONLY LOCKED</span>;
+}
+
+function SettingField({ label, children }) {
+  return <label className="block rounded-2xl border border-white/10 bg-white/[0.045] p-3"><div className="mb-2 text-[11px] font-bold uppercase tracking-[0.18em] text-slate-400">{label}</div>{children}</label>;
+}
+
+function StatusBadge({ value }) {
+  const color = value === "Online" ? "border-emerald-200/20 bg-emerald-300/10 text-emerald-100" : value === "Error" ? "border-rose-200/20 bg-rose-300/10 text-rose-100" : "border-amber-200/20 bg-amber-300/10 text-amber-100";
+  return <span className={cx("rounded-full border px-3 py-1 text-xs font-bold", color)}>{value}</span>;
+}
+
+function VictronSettingsModal({ onClose }) {
+  const [mode, setMode] = useState("GxLan");
+  const [host, setHost] = useState("");
+  const [status, setStatus] = useState("Offline");
+  async function saveAndTest() {
+    await camperAgentBridge.saveVictronSettings({ enabled: true, mode, host, modbusPort: 502, mqttPort: 1883, readOnly: true });
+    const result = await camperAgentBridge.testVictronConnection();
+    setStatus(result.ok ? result.data.state || "Offline" : "Error");
+  }
+  const devices = ["System", "Battery monitor", "Solar charger", "Inverter/charger", "DC-DC charger", "Tank sensors"];
+  const mappings = ["Battery SOC", "Battery voltage", "Battery current", "Battery power", "PV power", "Charger power", "Shore connected", "AC input source"];
+  return (
+    <ModalShell title="Victron" subtitle="GX, Venus OS, VE.Direct, Modbus/MQTT telemetry" icon={SolarPanel} onClose={onClose}>
+      <div className="grid h-full grid-cols-[1fr_1.2fr] gap-4">
+        <div className="space-y-3">
+          <SettingField label="Connection mode"><select value={mode} onChange={(e) => setMode(e.target.value)} className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option value="GxLan">GX / Venus OS LAN</option><option value="ModbusTcp">Modbus TCP</option><option value="Mqtt">MQTT</option><option value="VeDirectUsb">VE.Direct USB, future</option></select></SettingField>
+          <SettingField label="Host / IP"><input value={host} onChange={(e) => setHost(e.target.value)} placeholder="venus.local or 192.168.x.x" className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white outline-none" /></SettingField>
+          <div className="grid grid-cols-2 gap-3"><SettingField label="Modbus TCP"><input value="502" readOnly className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white" /></SettingField><SettingField label="MQTT"><input value="1883" readOnly className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white" /></SettingField></div>
+          <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.045] p-3"><ReadOnlyBadge /><StatusBadge value={status} /></div>
+          <button onClick={saveAndTest} className="w-full rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-black text-slate-950">Test Connection</button>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-3 text-sm font-black text-white">Device discovery</div><div className="space-y-2">{devices.map((item) => <div key={item} className="flex justify-between rounded-xl bg-black/20 px-3 py-2 text-xs"><span>{item}</span><span className="text-slate-400">Offline</span></div>)}</div></div>
+          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-3 text-sm font-black text-white">Telemetry mapping</div><div className="grid grid-cols-1 gap-2">{mappings.map((item) => <div key={item} className="rounded-xl bg-cyan-300/10 px-3 py-2 text-xs text-cyan-100">{item}</div>)}</div></div>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function GarminSettingsModal({ onClose }) {
+  const [status, setStatus] = useState("Offline");
+  async function scan() {
+    const result = await camperAgentBridge.scanNmeaBus();
+    setStatus(result.ok ? result.data.state || "Simulated" : "Error");
+  }
+  const pgns = [["127505", "12", "Fluid Level", "sim", "0.5 Hz"], ["129025", "8", "Position Rapid", "sim", "1 Hz"], ["126996", "3", "Product Information", "sim", "-"]];
+  return (
+    <ModalShell title="Garmin / NMEA" subtitle="NMEA 2000, EmpirBus discovery, Garmin network data" icon={Radio} onClose={onClose}>
+      <div className="grid h-full grid-cols-[320px_1fr] gap-4">
+        <div className="space-y-3">
+          <SettingField label="Connection type"><select className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option>NMEA 2000 CAN adapter</option><option>Signal K server</option><option>NMEA 0183 serial</option><option>Garmin/EmpirBus discovery</option></select></SettingField>
+          <SettingField label="CAN bitrate"><input value="250000" readOnly className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white" /></SettingField>
+          <SettingField label="Adapter"><select className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option>USB serial CAN adapter</option><option>Actisense-style gateway, future</option><option>SocketCAN bridge, future</option></select></SettingField>
+          <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.045] p-3"><ReadOnlyBadge /><StatusBadge value={status} /></div>
+          <button onClick={scan} className="w-full rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-black text-slate-950">Scan NMEA / Garmin bus</button>
+        </div>
+        <div className="grid grid-rows-[1fr_auto] gap-4">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-3 text-sm font-black text-white">Detected PGNs</div><div className="grid grid-cols-5 gap-2 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400"><span>PGN</span><span>Source</span><span>Name</span><span>Last seen</span><span>Rate</span></div>{pgns.map((row) => <div key={row.join(":")} className="mt-2 grid grid-cols-5 gap-2 rounded-xl bg-black/20 px-3 py-2 text-xs text-slate-200">{row.map((v) => <span key={v}>{v}</span>)}</div>)}</div>
+          <div className="grid grid-cols-2 gap-4"><div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4 text-xs text-slate-300">GPS, tanks, switching, battery/electrical, environment and alarms are supported discovery categories.</div><div className="rounded-3xl border border-amber-200/20 bg-amber-300/10 p-4 text-xs text-amber-100">EmpirBus circuits are unverified. Control disabled until circuit map is verified.</div></div>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function ObdSettingsModal({ onClose }) {
+  const [status, setStatus] = useState("PermissionRequired");
+  async function test() {
+    await camperAgentBridge.requestUsbPermission("obd");
+    const result = await camperAgentBridge.testObdConnection();
+    setStatus(result.ok ? result.data.state || "PermissionRequired" : "Error");
+  }
+  const pids = ["RPM PID 0C", "Speed PID 0D", "Coolant temp PID 05", "Intake temp PID 0F", "MAF PID 10", "Throttle PID 11", "Ambient temp PID 46", "Driver demand torque PID 61", "Actual engine torque PID 62", "Engine reference torque PID 63"];
+  return (
+    <ModalShell title="Ford OBD" subtitle="USB OBD dongle, ELM327/STN, Transit EcoBlue read-only" icon={CarFront} onClose={onClose}>
+      <div className="grid h-full grid-cols-[330px_1fr] gap-4">
+        <div className="space-y-3">
+          <SettingField label="USB dongle"><select className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option>Auto detect</option><option>ELM327 compatible USB</option><option>OBDLink/STN compatible USB</option><option>vLinker USB</option></select></SettingField>
+          <SettingField label="Serial baud"><select className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option>Auto</option><option>38400</option><option>115200</option><option>500000</option></select></SettingField>
+          <div className="grid grid-cols-2 gap-2 text-xs">{["USB permission", "Serial open", "ELM/STN detected", "OBD protocol", "ECU online"].map((item) => <div key={item} className="rounded-xl border border-white/10 bg-white/[0.045] px-3 py-2"><div className="text-slate-400">{item}</div><div className="font-bold text-amber-100">Pending</div></div>)}</div>
+          <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.045] p-3"><ReadOnlyBadge /><StatusBadge value={status} /></div>
+          <button onClick={test} className="w-full rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-black text-slate-950">Request USB / Test OBD</button>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-2 text-sm font-black text-white">Init sequence preview</div>{["ATZ", "ATE0", "ATL0", "ATS0", "ATH1", "ATSP0", "0100", "0120", "0140", "0160"].map((cmd) => <div key={cmd} className="mb-1 rounded-xl bg-black/30 px-3 py-1 font-mono text-xs text-cyan-100">{cmd}</div>)}<div className="mt-3 rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-xs text-amber-100">Read DTCs only. Clear DTC disabled in read-only mode.</div></div>
+          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-2 text-sm font-black text-white">Live read-only PIDs</div><div className="grid grid-cols-1 gap-1">{pids.map((pid) => <div key={pid} className="rounded-xl bg-white/[0.055] px-3 py-1.5 text-xs text-slate-200">{pid}</div>)}</div></div>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
+function IntegrationsHealthModal({ onClose }) {
+  const [exported, setExported] = useState(false);
+  async function exportDiagnostics() {
+    console.log("integration diagnostics", await camperAgentBridge.exportIntegrationDiagnostics());
+    setExported(true);
+  }
+  return (
+    <ModalShell title="Integrations Health" subtitle="Adapters, permissions, last update, logs" icon={Wrench} onClose={onClose}>
+      <div className="grid h-full grid-rows-[1fr_auto] gap-4">
+        <div className="grid grid-cols-5 gap-3">{["Battery BMS", "Victron", "Garmin/NMEA", "Ford OBD", "USB subsystem"].map((card) => <div key={card} className="rounded-3xl border border-white/10 bg-white/[0.045] p-3"><div className="text-base font-black text-white">{card}</div>{["status: Offline", "last packet: none", "stale age: n/a", "errors: 0", "source: simulator", "read-only: on"].map((line) => <div key={line} className="mt-3 text-xs text-slate-300">{line}</div>)}</div>)}</div>
+        <button onClick={exportDiagnostics} className="rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-black text-slate-950">{exported ? "Diagnostics exported to console" : "Export diagnostics JSON"}</button>
+      </div>
+    </ModalShell>
+  );
+}
+
+function BatteryBmsSettingsModal({ onClose }) {
+  const [tab, setTab] = useState("Overview");
+  const [canStatus, setCanStatus] = useState("Passive listen ready");
+  const [bleStatus, setBleStatus] = useState("Not scanned");
+  const bms = DEFAULT_BMS.telemetry;
+  async function scanCan() {
+    const result = await camperAgentBridge.scanBatteryCan();
+    setCanStatus(result.ok ? result.data.state || "Passive listen ready" : "Error");
+  }
+  async function scanBle() {
+    const result = await camperAgentBridge.scanBatteryBluetooth();
+    setBleStatus(result.ok ? result.data.state || "Discovery only" : "Error");
+  }
+  const tabs = ["Overview", "CAN / Victron", "Bluetooth", "Cells", "Diagnostics"];
+  return (
+    <ModalShell title="Battery / BMS" subtitle="12V 320Ah LiFePO4, 250A BMS, Bluetooth + CAN" icon={BatteryCharging} onClose={onClose}>
+      <div className="grid h-full grid-rows-[auto_1fr] gap-4">
+        <div className="flex gap-2">{tabs.map((item) => <button key={item} onClick={() => setTab(item)} className={cx("rounded-2xl px-4 py-2 text-sm font-black", tab === item ? "bg-cyan-300 text-slate-950" : "bg-white/[0.07] text-slate-300")}>{item}</button>)}</div>
+        {tab === "Overview" && <div className="grid grid-cols-[330px_1fr] gap-4">
+          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4 text-sm text-slate-300">
+            <div className="text-xl font-black text-white">PUPVWMHB 12V 320Ah LiFePO4 250A BMS</div>
+            {["Capacity: 320Ah", "Nominal voltage: 12.8V", "BMS current: 250A", "Chemistry: LiFePO4", "Read-only: Active"].map((line) => <div key={line} className="mt-3">{line}</div>)}
+            <div className="mt-4 rounded-2xl border border-cyan-200/20 bg-cyan-300/10 p-3 text-xs text-cyan-100">Source priority: Victron/GX CAN BMS, Direct CAN, Bluetooth BMS, Shunt/estimated, Simulator fallback.</div>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            {[["SOC", `${bms.socPercent}%`], ["Voltage", `${bms.voltage}V`], ["Current", `${bms.current}A`], ["Power", `${bms.powerWatts}W`], ["Remaining", `${bms.remainingCapacityAh}Ah`], ["Charge allowed", String(bms.chargeAllowed)], ["Discharge allowed", String(bms.dischargeAllowed)], ["Warnings", "0"], ["Alarms", "0"]].map(([k, v]) => <div key={k} className="rounded-2xl border border-white/10 bg-white/[0.045] p-3"><div className="text-xs text-slate-400">{k}</div><div className="mt-2 text-lg font-black text-white">{v}</div></div>)}
+          </div>
+        </div>}
+        {tab === "CAN / Victron" && <div className="grid grid-cols-[320px_1fr] gap-4">
+          <div className="space-y-3">
+            <div className="rounded-2xl border border-emerald-200/20 bg-emerald-300/10 p-3 text-sm text-emerald-100">Victron can read this BMS: user confirmed.</div>
+            <SettingField label="Connection path"><select className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option>Via Victron GX / CAN BMS</option><option>Direct CAN adapter</option><option>Unknown/manual</option></select></SettingField>
+            <SettingField label="CAN bitrate"><select className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option>Auto</option><option>250000</option><option>500000</option></select></SettingField>
+            <SettingField label="Protocol"><select className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option>Auto detect</option><option>Victron/GX mapped telemetry</option><option>Pylontech-compatible, if detected</option><option>JBD-compatible, if detected</option><option>Daly-compatible, if detected</option><option>Unknown raw CAN</option></select></SettingField>
+            <button onClick={scanCan} className="w-full rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-black text-slate-950">Scan BMS CAN read-only</button>
+          </div>
+          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-3 flex justify-between"><span className="font-black text-white">Raw CAN table</span><StatusBadge value={canStatus} /></div><div className="grid grid-cols-6 gap-2 text-xs text-slate-400"><span>CAN ID</span><span>DLC</span><span>Data</span><span>Rate</span><span>Last seen</span><span>Decoded as</span></div><div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-4 text-sm text-slate-400">No frames yet. Discovery starts in passive listen mode only.</div></div>
+        </div>}
+        {tab === "Bluetooth" && <div className="grid grid-cols-[320px_1fr] gap-4"><div className="space-y-3"><div className="rounded-2xl border border-white/10 bg-white/[0.045] p-3 text-sm text-slate-300">Bluetooth support: available, protocol unverified.</div><button onClick={scanBle} className="w-full rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-black text-slate-950">Scan BLE BMS devices</button><div className="rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-xs text-amber-100">Bluetooth write commands disabled. Read-only discovery only.</div></div><div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-3 flex justify-between"><span className="font-black text-white">BLE discovery</span><StatusBadge value={bleStatus} /></div>{["Device name/address list", "Connection state", "Services discovered", "Characteristics discovered", "Protocol: Unknown / future"].map((line) => <div key={line} className="mt-3 rounded-xl bg-black/20 px-3 py-2 text-sm text-slate-300">{line}</div>)}</div></div>}
+        {tab === "Cells" && <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-5"><div className="text-xl font-black text-white">Cell balance</div><div className="mt-3 text-sm text-slate-400">Cell data unavailable until BMS protocol is decoded.</div><div className="mt-5 grid grid-cols-8 gap-2">{Array.from({ length: 8 }).map((_, index) => <div key={index} className="h-32 rounded-2xl border border-white/10 bg-white/[0.035]" />)}</div></div>}
+        {tab === "Diagnostics" && <div className="grid grid-cols-2 gap-4"><div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4">{["source: simulator_fallback", "protocol: PUPVWMHB discovery pending", "last payload: none", "raw CAN frame count: 0", "BLE services count: 0", "stale age: n/a", "warnings: none", "alarms: none"].map((line) => <div key={line} className="mb-3 text-sm text-slate-300">{line}</div>)}</div><button onClick={() => camperAgentBridge.exportBatteryBmsDiagnostics().then((r) => console.log("battery bms diagnostics", r))} className="h-16 self-end rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-black text-slate-950">Export diagnostics JSON</button></div>}
+      </div>
+    </ModalShell>
+  );
+}
+
+function SystemsView({ state, setters, openIntegrationSettings }) {
   return (
     <div className="grid h-full grid-cols-[1fr_1fr] gap-4">
       <GlassCard className="p-5">
@@ -754,15 +943,23 @@ function SystemsView({ state, setters }) {
           </div>
           <Settings className="text-cyan-200" size={30} />
         </div>
-        <div className="space-y-2">
+        <div className="max-h-[390px] space-y-2 overflow-y-auto pr-1">
           {[
+            ["Battery / BMS", "12V 320Ah LiFePO4, 250A BMS, Bluetooth + CAN", "battery"],
+            ["Power Integrations", "SmartSolar, Renogy 40A, Orion-Tr, shore charging"],
+            ["Victron System", "SmartSolar MPPT 100/20 and Orion-Tr 12/12V 18A", "victron"],
+            ["Renogy DC/DC", "40A alternator battery charger"],
             ["Network", "Wi‑Fi, Bluetooth, hotspot, MQTT broker"],
             ["Sensors", "Tank calibration, temperature offsets, CO₂"],
             ["Power limits", "Battery chemistry, inverter, charger profiles"],
             ["Automation", "Rules, timers, scenes, geofence actions"],
             ["Service", "Logs, firmware, backup, factory reset"],
-          ].map(([title, sub]) => (
-            <button key={title} className="flex w-full items-center justify-between rounded-2xl border border-white/10 bg-white/[0.055] px-4 py-3 text-left hover:bg-white/[0.09]">
+            ["Victron", "GX, Venus OS, VE.Direct, Modbus/MQTT telemetry", "victron"],
+            ["Garmin / NMEA", "NMEA 2000, EmpirBus discovery, Garmin network data", "garmin"],
+            ["Ford OBD", "USB OBD dongle, ELM327/STN, Transit EcoBlue read-only", "obd"],
+            ["Integrations Health", "Adapters, permissions, last update, logs", "health"],
+          ].map(([title, sub, modal]) => (
+            <button key={title} onClick={() => modal && openIntegrationSettings(modal)} className="flex w-full items-center justify-between rounded-2xl border border-white/10 bg-white/[0.055] px-4 py-3 text-left hover:bg-white/[0.09]">
               <div>
                 <div className="text-sm font-bold text-white">{title}</div>
                 <div className="text-xs text-slate-400">{sub}</div>
@@ -780,8 +977,10 @@ export default function CampervanHMI() {
   const [activeTab, setActiveTab] = useState("home");
   const [activeScene, setActiveScene] = useState("camp");
   const [showEnergyStats, setShowEnergyStats] = useState(false);
+  const [integrationModal, setIntegrationModal] = useState(null);
 
   const [battery, setBattery] = useState(87);
+  const [batteryBms] = useState(DEFAULT_BMS);
   const [freshWater, setFreshWater] = useState(68);
   const [greyWater, setGreyWater] = useState(38);
   const [heater, setHeater] = useState(true);
@@ -806,6 +1005,7 @@ export default function CampervanHMI() {
 
   const state = {
     battery,
+    batteryBms,
     freshWater,
     greyWater,
     heater,
@@ -865,7 +1065,7 @@ export default function CampervanHMI() {
       case "lights":
         return <LightsView state={state} setters={setters} />;
       case "systems":
-        return <SystemsView state={state} setters={setters} />;
+        return <SystemsView state={state} setters={setters} openIntegrationSettings={setIntegrationModal} />;
       default:
         return <HomeView state={state} setters={setters} openEnergyStats={() => setShowEnergyStats(true)} />;
     }
@@ -901,6 +1101,13 @@ export default function CampervanHMI() {
           </main>
         </div>
         <AnimatePresence>{showEnergyStats && <EnergyStatsModal onClose={() => setShowEnergyStats(false)} />}</AnimatePresence>
+        <AnimatePresence>
+          {integrationModal === "battery" && <BatteryBmsSettingsModal onClose={() => setIntegrationModal(null)} />}
+          {integrationModal === "victron" && <VictronSettingsModal onClose={() => setIntegrationModal(null)} />}
+          {integrationModal === "garmin" && <GarminSettingsModal onClose={() => setIntegrationModal(null)} />}
+          {integrationModal === "obd" && <ObdSettingsModal onClose={() => setIntegrationModal(null)} />}
+          {integrationModal === "health" && <IntegrationsHealthModal onClose={() => setIntegrationModal(null)} />}
+        </AnimatePresence>
         </div>
       </div>
     </div>

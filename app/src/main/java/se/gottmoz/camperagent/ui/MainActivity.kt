@@ -27,6 +27,7 @@ import androidx.webkit.WebViewAssetLoader
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
+import se.gottmoz.camperagent.integration.CamperAgentBridge
 import se.gottmoz.camperagent.ui.data.CamperRepository
 import se.gottmoz.camperagent.ui.data.SimulatedCamperRepository
 import se.gottmoz.camperagent.ui.model.DashboardState
@@ -88,6 +89,7 @@ private fun CamperHmiWebView() {
                 settings.useWideViewPort = true
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
+                addJavascriptInterface(CamperAgentBridge(context), "CamperAgent")
                 loadUrl("https://appassets.androidplatform.net/hmi/index.html")
             }
         }

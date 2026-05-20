@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   BatteryCharging,
@@ -51,6 +51,8 @@ import { camperAgentBridge } from "./integrations/camperAgentBridge";
 
 // Clean Ford Transit campervan background only. Do not use a full GUI mockup here.
 const VAN_BACKGROUND_URL = "assets/ford-transit-clean-bg.png";
+const DESIGN_WIDTH = 1080;
+const DESIGN_HEIGHT = 600;
 
 const DEFAULT_BMS = {
   profile: { displayName: "PUPVWMHB 12V 320Ah LiFePO4 250A BMS", capacityAh: 320, nominalVoltage: 12.8, bmsContinuousCurrentAmp: 250 },
@@ -808,8 +810,12 @@ function VictronSettingsModal({ onClose }) {
 function GarminSettingsModal({ onClose }) {
   const [status, setStatus] = useState("Offline");
   async function scan() {
-    const result = await camperAgentBridge.scanNmeaBus();
+    const result = await camperAgentBridge.startNmea2000Scan({ profileId: "nmea2000", bitrate: 250000, readOnly: true });
     setStatus(result.ok ? result.data.state || "Simulated" : "Error");
+  }
+  async function stopScan() {
+    const result = await camperAgentBridge.stopNmea2000Scan();
+    setStatus(result.ok ? result.data.state || "Stopped" : "Error");
   }
   const pgns = [["127505", "12", "Fluid Level", "sim", "0.5 Hz"], ["129025", "8", "Position Rapid", "sim", "1 Hz"], ["126996", "3", "Product Information", "sim", "-"]];
   return (
@@ -820,7 +826,11 @@ function GarminSettingsModal({ onClose }) {
           <SettingField label="CAN bitrate"><input value="250000" readOnly className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white" /></SettingField>
           <SettingField label="Adapter"><select className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option>USB serial CAN adapter</option><option>Actisense-style gateway, future</option><option>SocketCAN bridge, future</option></select></SettingField>
           <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.045] p-3"><ReadOnlyBadge /><StatusBadge value={status} /></div>
-          <button onClick={scan} className="w-full rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-black text-slate-950">Scan NMEA / Garmin bus</button>
+          <div className="grid grid-cols-3 gap-2">
+            <button onClick={() => camperAgentBridge.listCanAdapters().then((r) => setStatus(r.ok ? "Adapters listed" : "Error"))} className="rounded-2xl bg-white/[0.07] px-3 py-3 text-xs font-black text-white">Scan CAN adapters</button>
+            <button onClick={scan} className="rounded-2xl bg-cyan-300 px-3 py-3 text-xs font-black text-slate-950">Start NMEA scan</button>
+            <button onClick={stopScan} className="rounded-2xl bg-white/[0.07] px-3 py-3 text-xs font-black text-white">Stop scan</button>
+          </div>
         </div>
         <div className="grid grid-rows-[1fr_auto] gap-4">
           <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-3 text-sm font-black text-white">Detected PGNs</div><div className="grid grid-cols-5 gap-2 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400"><span>PGN</span><span>Source</span><span>Name</span><span>Last seen</span><span>Rate</span></div>{pgns.map((row) => <div key={row.join(":")} className="mt-2 grid grid-cols-5 gap-2 rounded-xl bg-black/20 px-3 py-2 text-xs text-slate-200">{row.map((v) => <span key={v}>{v}</span>)}</div>)}</div>
@@ -833,25 +843,50 @@ function GarminSettingsModal({ onClose }) {
 
 function ObdSettingsModal({ onClose }) {
   const [status, setStatus] = useState("PermissionRequired");
-  async function test() {
-    await camperAgentBridge.requestUsbPermission("obd");
-    const result = await camperAgentBridge.testObdConnection();
-    setStatus(result.ok ? result.data.state || "PermissionRequired" : "Error");
+  const [lastError, setLastError] = useState("");
+  const [baudRate, setBaudRate] = useState("Auto");
+  const [protocol, setProtocol] = useState("ISO15765-4 CAN 11/500");
+  const [rawCommand, setRawCommand] = useState("ATI");
+  const [expertMode, setExpertMode] = useState(false);
+  const baudRates = ["Auto", "9600", "19200", "38400", "57600", "115200", "230400", "250000", "460800", "500000", "921600", "1000000", "2000000"];
+  const protocols = ["Auto", "ISO15765-4 CAN 11/500", "ISO15765-4 CAN 29/500", "ISO15765-4 CAN 11/250", "ISO15765-4 CAN 29/250", "SAE J1939 CAN 29/250", "SAE J1939 CAN 29/500", "ISO9141-2", "ISO14230-4 KWP", "Custom"];
+  async function bridgeAction(action) {
+    const settings = { baudRate, protocol, adapterType: "VLinkerUsb", readOnly: true };
+    const calls = {
+      scan: () => camperAgentBridge.scanUsbSerialDevices(),
+      permission: () => camperAgentBridge.requestUsbPermission("obd"),
+      connect: () => camperAgentBridge.connectObd(settings),
+      disconnect: () => camperAgentBridge.disconnectObd(),
+    };
+    const result = await calls[action]();
+    setStatus(result.ok ? result.data.state || result.data.status?.state || "Device found" : "Error");
+    setLastError(result.ok ? "" : result.error || "Unknown error");
+  }
+  async function sendRaw() {
+    const result = await camperAgentBridge.sendReadOnlyObdCommand(rawCommand);
+    setStatus(result.ok ? `Queued ${rawCommand}` : "Error");
+    setLastError(result.ok ? "" : result.error || "Blocked unsafe command");
   }
   const pids = ["RPM PID 0C", "Speed PID 0D", "Coolant temp PID 05", "Intake temp PID 0F", "MAF PID 10", "Throttle PID 11", "Ambient temp PID 46", "Driver demand torque PID 61", "Actual engine torque PID 62", "Engine reference torque PID 63"];
   return (
-    <ModalShell title="Ford OBD" subtitle="USB OBD dongle, ELM327/STN, Transit EcoBlue read-only" icon={CarFront} onClose={onClose}>
+    <ModalShell title="Ford OBD / vLinker" subtitle="USB vLinker, ISO15765-4 CAN11/500, PIDs, DTC read-only" icon={CarFront} onClose={onClose}>
       <div className="grid h-full grid-cols-[330px_1fr] gap-4">
-        <div className="space-y-3">
+        <div className="space-y-2">
           <SettingField label="USB dongle"><select className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option>Auto detect</option><option>ELM327 compatible USB</option><option>OBDLink/STN compatible USB</option><option>vLinker USB</option></select></SettingField>
-          <SettingField label="Serial baud"><select className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option>Auto</option><option>38400</option><option>115200</option><option>500000</option></select></SettingField>
-          <div className="grid grid-cols-2 gap-2 text-xs">{["USB permission", "Serial open", "ELM/STN detected", "OBD protocol", "ECU online"].map((item) => <div key={item} className="rounded-xl border border-white/10 bg-white/[0.045] px-3 py-2"><div className="text-slate-400">{item}</div><div className="font-bold text-amber-100">Pending</div></div>)}</div>
+          <SettingField label="Serial baud"><select value={baudRate} onChange={(e) => setBaudRate(e.target.value)} className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white">{baudRates.map((rate) => <option key={rate}>{rate}</option>)}</select></SettingField>
+          <SettingField label="OBD protocol"><select value={protocol} onChange={(e) => setProtocol(e.target.value)} className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white">{protocols.map((item) => <option key={item}>{item}</option>)}</select></SettingField>
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick={() => bridgeAction("scan")} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Scan USB</button>
+            <button onClick={() => bridgeAction("permission")} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Request Permission</button>
+            <button onClick={() => bridgeAction("connect")} className="rounded-2xl bg-cyan-300 px-3 py-2 text-xs font-black text-slate-950">Connect</button>
+            <button onClick={() => bridgeAction("disconnect")} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Disconnect</button>
+          </div>
           <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.045] p-3"><ReadOnlyBadge /><StatusBadge value={status} /></div>
-          <button onClick={test} className="w-full rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-black text-slate-950">Request USB / Test OBD</button>
+          {lastError && <div className="rounded-2xl border border-rose-200/20 bg-rose-300/10 p-3 text-xs text-rose-100">{lastError}</div>}
         </div>
         <div className="grid grid-cols-2 gap-4">
-          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-2 text-sm font-black text-white">Init sequence preview</div>{["ATZ", "ATE0", "ATL0", "ATS0", "ATH1", "ATSP0", "0100", "0120", "0140", "0160"].map((cmd) => <div key={cmd} className="mb-1 rounded-xl bg-black/30 px-3 py-1 font-mono text-xs text-cyan-100">{cmd}</div>)}<div className="mt-3 rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-xs text-amber-100">Read DTCs only. Clear DTC disabled in read-only mode.</div></div>
-          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-2 text-sm font-black text-white">Live read-only PIDs</div><div className="grid grid-cols-1 gap-1">{pids.map((pid) => <div key={pid} className="rounded-xl bg-white/[0.055] px-3 py-1.5 text-xs text-slate-200">{pid}</div>)}</div></div>
+          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-2 text-sm font-black text-white">Init sequence preview</div>{["ATZ", "ATE0", "ATL0", "ATS0", "ATH1", "ATAL", "ATST96", "ATSP6", "ATDP", "ATDPN"].map((cmd) => <div key={cmd} className="mb-1 rounded-xl bg-black/30 px-3 py-1 font-mono text-xs text-cyan-100">{cmd}</div>)}<div className="mt-3 rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-xs text-amber-100">Read DTCs only. Clear DTC disabled in read-only mode.</div></div>
+          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-2 text-sm font-black text-white">Live read-only PIDs</div><div className="grid grid-cols-1 gap-1">{pids.map((pid) => <div key={pid} className="rounded-xl bg-white/[0.055] px-3 py-1.5 text-xs text-slate-200">{pid}</div>)}</div><div className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-3"><div className="mb-2 text-xs font-black text-white">Advanced / Raw OBD</div><label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={expertMode} onChange={(e) => setExpertMode(e.target.checked)} /> Expert mode</label><div className="mt-2 flex gap-2"><input disabled={!expertMode} value={rawCommand} onChange={(e) => setRawCommand(e.target.value)} className="min-w-0 flex-1 rounded-xl bg-slate-900 px-3 py-2 text-xs text-white" /><button disabled={!expertMode} onClick={sendRaw} className="rounded-xl bg-cyan-300 px-3 py-2 text-xs font-black text-slate-950 disabled:opacity-40">Send</button></div><div className="mt-2 text-[11px] text-amber-100">Do not send write/control commands. Read-only diagnostics only.</div></div></div>
         </div>
       </div>
     </ModalShell>
@@ -874,14 +909,42 @@ function IntegrationsHealthModal({ onClose }) {
   );
 }
 
+function CanBusScannerModal({ onClose }) {
+  const [status, setStatus] = useState("Stopped");
+  async function start(profileId) {
+    const result = await camperAgentBridge.startCanScan({ profileId, readOnly: true });
+    setStatus(result.ok ? `${result.data.state}: ${result.data.profile}` : "Error");
+  }
+  return (
+    <ModalShell title="CAN Bus Scanner" subtitle="Ford OBD, NMEA 2000, BMS-CAN profiles" icon={Radio} onClose={onClose}>
+      <div className="grid h-full grid-cols-[300px_1fr] gap-4">
+        <div className="space-y-3">
+          {[["ford_obd", "Ford OBD CAN", "500000 / 11-bit / ISO15765-4 / ELM-vLinker"], ["nmea2000", "Garmin/NMEA 2000", "250000 / 29-bit / PGN passive discovery"], ["battery_bms", "Battery BMS CAN", "Auto, 250000, 500000 / 11 or 29-bit"]].map(([id, label, sub]) => <button key={id} onClick={() => start(id)} className="w-full rounded-2xl border border-white/10 bg-white/[0.055] p-3 text-left hover:bg-white/[0.09]"><div className="text-sm font-black text-white">{label}</div><div className="text-xs text-slate-400">{sub}</div></button>)}
+          <button onClick={() => camperAgentBridge.stopCanScan().then((r) => setStatus(r.ok ? "Stopped" : "Error"))} className="w-full rounded-2xl bg-white/[0.07] px-4 py-3 text-sm font-black text-white">Stop scan</button>
+          <div className="rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-xs text-amber-100">Passive read-only discovery only. vLinker is for Ford OBD; use USB-CAN for NMEA/BMS where possible.</div>
+        </div>
+        <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4">
+          <div className="mb-3 flex items-center justify-between"><span className="font-black text-white">Raw CAN scan</span><StatusBadge value={status} /></div>
+          <div className="grid grid-cols-6 gap-2 text-xs text-slate-400"><span>Timestamp</span><span>CAN ID</span><span>DLC</span><span>Data</span><span>Rate</span><span>Decoded</span></div>
+          <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-4 text-sm text-slate-400">No frames captured yet.</div>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
 function BatteryBmsSettingsModal({ onClose }) {
   const [tab, setTab] = useState("Overview");
   const [canStatus, setCanStatus] = useState("Passive listen ready");
   const [bleStatus, setBleStatus] = useState("Not scanned");
   const bms = DEFAULT_BMS.telemetry;
   async function scanCan() {
-    const result = await camperAgentBridge.scanBatteryCan();
+    const result = await camperAgentBridge.startBatteryCanScan({ profileId: "battery_bms", bitrate: "Auto", readOnly: true });
     setCanStatus(result.ok ? result.data.state || "Passive listen ready" : "Error");
+  }
+  async function stopCan() {
+    const result = await camperAgentBridge.stopBatteryCanScan();
+    setCanStatus(result.ok ? result.data.state || "Stopped" : "Error");
   }
   async function scanBle() {
     const result = await camperAgentBridge.scanBatteryBluetooth();
@@ -907,8 +970,13 @@ function BatteryBmsSettingsModal({ onClose }) {
             <div className="rounded-2xl border border-emerald-200/20 bg-emerald-300/10 p-3 text-sm text-emerald-100">Victron can read this BMS: user confirmed.</div>
             <SettingField label="Connection path"><select className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option>Via Victron GX / CAN BMS</option><option>Direct CAN adapter</option><option>Unknown/manual</option></select></SettingField>
             <SettingField label="CAN bitrate"><select className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option>Auto</option><option>250000</option><option>500000</option></select></SettingField>
-            <SettingField label="Protocol"><select className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option>Auto detect</option><option>Victron/GX mapped telemetry</option><option>Pylontech-compatible, if detected</option><option>JBD-compatible, if detected</option><option>Daly-compatible, if detected</option><option>Unknown raw CAN</option></select></SettingField>
-            <button onClick={scanCan} className="w-full rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-black text-slate-950">Scan BMS CAN read-only</button>
+            <SettingField label="Protocol"><select className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white">{["Auto detect", "Victron/GX mapped telemetry", "Pylontech-like", "JK BMS / JKBMS", "JBD / Xiaoxiang", "Daly", "Seplos", "Seplos v3", "Pace", "Renogy BMS", "RV-C House Battery", "EG4", "Felicity", "LiTime / Power Queen / Redodo", "Heltec / YanYang", "Valence", "ANT", "Sinowealth", "Unknown raw CAN"].map((item) => <option key={item}>{item}</option>)}</select></SettingField>
+            <div className="grid grid-cols-3 gap-2">
+              <button onClick={() => camperAgentBridge.listCanAdapters().then((r) => setCanStatus(r.ok ? "Adapters listed" : "Error"))} className="rounded-2xl bg-white/[0.07] px-3 py-3 text-xs font-black text-white">Scan CAN adapters</button>
+              <button onClick={scanCan} className="rounded-2xl bg-cyan-300 px-3 py-3 text-xs font-black text-slate-950">Start BMS CAN scan</button>
+              <button onClick={stopCan} className="rounded-2xl bg-white/[0.07] px-3 py-3 text-xs font-black text-white">Stop scan</button>
+            </div>
+            <div className="rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-xs text-amber-100">vLinker is configured for Ford OBD. Use a USB-CAN adapter for Garmin/NMEA and BMS-CAN sniffing unless adapter supports raw passive CAN monitor safely.</div>
           </div>
           <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-3 flex justify-between"><span className="font-black text-white">Raw CAN table</span><StatusBadge value={canStatus} /></div><div className="grid grid-cols-6 gap-2 text-xs text-slate-400"><span>CAN ID</span><span>DLC</span><span>Data</span><span>Rate</span><span>Last seen</span><span>Decoded as</span></div><div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-4 text-sm text-slate-400">No frames yet. Discovery starts in passive listen mode only.</div></div>
         </div>}
@@ -945,6 +1013,8 @@ function SystemsView({ state, setters, openIntegrationSettings }) {
         </div>
         <div className="max-h-[390px] space-y-2 overflow-y-auto pr-1">
           {[
+            ["Ford OBD / vLinker", "USB vLinker, ISO15765-4 CAN11/500, PIDs, DTC read-only", "obd"],
+            ["CAN Bus Scanner", "Ford OBD, NMEA 2000, BMS-CAN profiles", "canbus"],
             ["Battery / BMS", "12V 320Ah LiFePO4, 250A BMS, Bluetooth + CAN", "battery"],
             ["Power Integrations", "SmartSolar, Renogy 40A, Orion-Tr, shore charging"],
             ["Victron System", "SmartSolar MPPT 100/20 and Orion-Tr 12/12V 18A", "victron"],
@@ -978,6 +1048,7 @@ export default function CampervanHMI() {
   const [activeScene, setActiveScene] = useState("camp");
   const [showEnergyStats, setShowEnergyStats] = useState(false);
   const [integrationModal, setIntegrationModal] = useState(null);
+  const [hmiScale, setHmiScale] = useState(1);
 
   const [battery, setBattery] = useState(87);
   const [batteryBms] = useState(DEFAULT_BMS);
@@ -1002,6 +1073,13 @@ export default function CampervanHMI() {
   const [alarm, setAlarm] = useState(true);
   const [interlock, setInterlock] = useState(true);
   const [remote, setRemote] = useState(true);
+
+  useEffect(() => {
+    const updateScale = () => setHmiScale(Math.min(window.innerWidth / DESIGN_WIDTH, window.innerHeight / DESIGN_HEIGHT, 1));
+    updateScale();
+    window.addEventListener("resize", updateScale);
+    return () => window.removeEventListener("resize", updateScale);
+  }, []);
 
   const state = {
     battery,
@@ -1072,8 +1150,8 @@ export default function CampervanHMI() {
   }, [activeTab, state, setters]);
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-slate-950 p-4 text-slate-100">
-      <div className="relative h-[600px] w-[1080px] overflow-hidden rounded-[2.25rem] border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.16),transparent_30%),radial-gradient(circle_at_bottom_right,rgba(168,85,247,0.18),transparent_35%),linear-gradient(135deg,#020617,#0f172a_45%,#020617)] shadow-2xl shadow-black">
+    <div className="flex h-screen w-screen items-center justify-center overflow-hidden bg-slate-950 text-slate-100">
+      <div style={{ width: DESIGN_WIDTH, height: DESIGN_HEIGHT, transform: `scale(${hmiScale})`, transformOrigin: "center center" }} className="relative overflow-hidden rounded-[2.25rem] border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.16),transparent_30%),radial-gradient(circle_at_bottom_right,rgba(168,85,247,0.18),transparent_35%),linear-gradient(135deg,#020617,#0f172a_45%,#020617)] shadow-2xl shadow-black">
         <div
           className="pointer-events-none absolute inset-0 bg-cover bg-center opacity-70"
           style={{ backgroundImage: `url(${VAN_BACKGROUND_URL})` }}
@@ -1103,6 +1181,7 @@ export default function CampervanHMI() {
         <AnimatePresence>{showEnergyStats && <EnergyStatsModal onClose={() => setShowEnergyStats(false)} />}</AnimatePresence>
         <AnimatePresence>
           {integrationModal === "battery" && <BatteryBmsSettingsModal onClose={() => setIntegrationModal(null)} />}
+          {integrationModal === "canbus" && <CanBusScannerModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "victron" && <VictronSettingsModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "garmin" && <GarminSettingsModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "obd" && <ObdSettingsModal onClose={() => setIntegrationModal(null)} />}

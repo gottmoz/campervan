@@ -36,6 +36,31 @@ enum class BmsCapability {
     ProtocolDiscovery
 }
 
+enum class BmsProtocol {
+    AutoDetect,
+    VictronGxDbusBattery,
+    VictronCanBusBms,
+    JkBms,
+    JkInverterBms,
+    JbdXiaoxiang,
+    Daly,
+    Seplos,
+    SeplosV3,
+    Pace,
+    RenogyBms,
+    RvcHouseBattery,
+    PylontechLike,
+    Eg4,
+    Felicity,
+    LitimePowerQueenRedodo,
+    HeltecYanyangModbus,
+    Valence,
+    Ant,
+    Sinowealth,
+    UnknownRawCan,
+    UnknownBluetooth
+}
+
 data class BatteryProfile(
     val id: String,
     val displayName: String,

@@ -5,7 +5,7 @@ import kotlinx.coroutines.withContext
 import se.gottmoz.camperagent.integration.usbserial.UsbSerialManager
 
 class ObdElmClient(private val usbSerialManager: UsbSerialManager) {
-    private val initSequence = listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH1", "ATSP0")
+    private val initSequence = FordTransitEcoBlue2016Profile.initSequence
 
     suspend fun initialize(): List<String> = withContext(Dispatchers.IO) {
         initSequence.map { sendReadOnlyCommand(it) }
@@ -15,7 +15,8 @@ class ObdElmClient(private val usbSerialManager: UsbSerialManager) {
         mapOf(
             "ATI" to sendReadOnlyCommand("ATI"),
             "AT@1" to sendReadOnlyCommand("AT@1"),
-            "ATDP" to sendReadOnlyCommand("ATDP")
+            "ATDP" to sendReadOnlyCommand("ATDP"),
+            "ATDPN" to sendReadOnlyCommand("ATDPN")
         )
     }
 
@@ -39,8 +40,8 @@ class ObdElmClient(private val usbSerialManager: UsbSerialManager) {
     private fun isReadOnlyCommand(command: String): Boolean {
         val normalized = command.trim().uppercase()
         return normalized in initSequence ||
-            normalized in setOf("ATI", "AT@1", "ATDP", "0100", "0120", "0140", "0160", "03") ||
-            normalized.matches(Regex("01(0C|0D|05|0F|10|11|46|61|62|63)"))
+            normalized in setOf("ATI", "AT@1", "ATDP", "ATDPN", "0100", "0120", "0140", "0160", "03") ||
+            normalized.matches(Regex("01(0C|0D|05|0F|10|11|42|46|61|62|63)"))
     }
 
     private fun sanitize(raw: String): String = raw.replace(">", "").replace(Regex("[\\r\\n]"), "").trim()

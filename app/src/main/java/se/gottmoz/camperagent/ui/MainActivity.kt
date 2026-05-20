@@ -33,12 +33,20 @@ import se.gottmoz.camperagent.ui.data.SimulatedCamperRepository
 import se.gottmoz.camperagent.ui.model.DashboardState
 
 class MainActivity : ComponentActivity() {
+    private lateinit var camperAgentBridge: CamperAgentBridge
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestNotificationPermission()
+        camperAgentBridge = CamperAgentBridge(this)
         setContent {
-            CamperHmiWebView()
+            CamperHmiWebView(camperAgentBridge)
         }
+    }
+
+    override fun onDestroy() {
+        if (::camperAgentBridge.isInitialized) camperAgentBridge.close()
+        super.onDestroy()
     }
 
     private fun requestNotificationPermission() {
@@ -50,7 +58,7 @@ class MainActivity : ComponentActivity() {
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun CamperHmiWebView() {
+private fun CamperHmiWebView(camperAgentBridge: CamperAgentBridge) {
     AndroidView(
         modifier = Modifier.fillMaxSize(),
         factory = { context ->
@@ -89,7 +97,7 @@ private fun CamperHmiWebView() {
                 settings.useWideViewPort = true
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
-                addJavascriptInterface(CamperAgentBridge(context), "CamperAgent")
+                addJavascriptInterface(camperAgentBridge, "CamperAgent")
                 loadUrl("https://appassets.androidplatform.net/hmi/index.html")
             }
         }

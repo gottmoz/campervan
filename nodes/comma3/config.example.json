@@ -1,0 +1,10 @@
+{
+  "node_id": "comma3-main",
+  "bridge_url": "http://127.0.0.1:8765",
+  "shared_secret": "dev-change-me",
+  "upload_interval_seconds": 30,
+  "mode": "read_only",
+  "upload_status": true,
+  "upload_route_summary": true,
+  "upload_can_summary": false
+}

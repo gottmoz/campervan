@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Match any USB device until the real vLinker VID/PID is verified on hardware. -->
+    <usb-device />
+</resources>

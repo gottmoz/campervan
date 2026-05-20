@@ -1,0 +1,22 @@
+[Unit]
+Description=Camper Agent Remote Update Queue
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=camper
+Group=camper
+WorkingDirectory=/opt/camper-agent/remote-queue
+EnvironmentFile=/etc/camper-agent/remote-queue.env
+ExecStart=/usr/bin/python3 /opt/camper-agent/remote-queue/queue_server.py --host 127.0.0.1 --port 8787
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/camper-agent
+
+[Install]
+WantedBy=multi-user.target

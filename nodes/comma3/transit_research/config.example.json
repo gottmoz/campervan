@@ -1,0 +1,10 @@
+{
+  "vehicle_name": "Ford Transit Custom Camper",
+  "vin": "WFOFXXTTGFGD20380",
+  "mode": "read_only",
+  "allow_can_write": false,
+  "allow_controls": false,
+  "allow_firmware_query": true,
+  "capture_seconds": 120,
+  "output_dir": "data/comma/transit_research"
+}

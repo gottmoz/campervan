@@ -1,0 +1,14 @@
+{
+  "node_id": "comma-3",
+  "bridge_url": "http://127.0.0.1:8765",
+  "shared_secret": "replace-with-shared-secret",
+  "upload_enabled": false,
+  "interval_seconds": 10,
+  "can_probe_seconds": 1.0,
+  "remote_update": {
+    "enabled": false,
+    "queue_url": "https://updates.example",
+    "node_token": "replace-with-node-token",
+    "admin_secret": "replace-with-update-admin-secret"
+  }
+}

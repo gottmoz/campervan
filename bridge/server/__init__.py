@@ -1,0 +1,1 @@
+"""Bridge server extension namespace."""

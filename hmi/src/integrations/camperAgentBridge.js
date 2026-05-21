@@ -1,3 +1,18 @@
+function defaultPidMappings() {
+  return [
+    { functionKey: "rpm", label: "RPM", enabled: true, mode: "Standard OBD", service: "01", pid: "0C", formula: "((A*256)+B)/4", unit: "rpm", min: 0, max: 5000, pollIntervalMs: 700, timeoutMs: 2000, decimals: 0 },
+    { functionKey: "speedKph", label: "Speed", enabled: true, mode: "Standard OBD", service: "01", pid: "0D", formula: "A", unit: "km/h", min: 0, max: 200, pollIntervalMs: 700, timeoutMs: 2000, decimals: 0 },
+    { functionKey: "coolantTempC", label: "Coolant temp", enabled: true, mode: "Standard OBD", service: "01", pid: "05", formula: "A-40", unit: "degC", min: 40, max: 120, pollIntervalMs: 2000, timeoutMs: 2000, decimals: 0 },
+    { functionKey: "oilTempC", label: "Oil temp", enabled: false, mode: "Standard OBD", service: "01", pid: "5C", formula: "A-40", unit: "degC", min: 40, max: 130, pollIntervalMs: 3000, timeoutMs: 2000, decimals: 0 },
+    { functionKey: "outsideTempC", label: "Outside temp", enabled: true, mode: "Standard OBD", service: "01", pid: "46", formula: "A-40", unit: "degC", min: -30, max: 50, pollIntervalMs: 3000, timeoutMs: 2000, decimals: 0 },
+    { functionKey: "intakeTempC", label: "Intake temp", enabled: true, mode: "Standard OBD", service: "01", pid: "0F", formula: "A-40", unit: "degC", min: 40, max: 120, pollIntervalMs: 2000, timeoutMs: 2000, decimals: 0 },
+    { functionKey: "moduleVoltage", label: "Module voltage", enabled: true, mode: "Standard OBD", service: "01", pid: "42", formula: "((A*256)+B)/1000", unit: "V", min: 11, max: 15.5, pollIntervalMs: 3000, timeoutMs: 2000, decimals: 1 },
+    { functionKey: "mafGps", label: "MAF", enabled: true, mode: "Standard OBD", service: "01", pid: "10", formula: "((A*256)+B)/100", unit: "g/s", min: 0, max: 100, pollIntervalMs: 2000, timeoutMs: 2000, decimals: 1 },
+    { functionKey: "throttlePercent", label: "Throttle", enabled: true, mode: "Standard OBD", service: "01", pid: "11", formula: "A*100/255", unit: "%", min: 0, max: 100, pollIntervalMs: 1500, timeoutMs: 2000, decimals: 0 },
+    { functionKey: "engineLoadPercent", label: "Engine load", enabled: true, mode: "Standard OBD", service: "01", pid: "04", formula: "A*100/255", unit: "%", min: 0, max: 100, pollIntervalMs: 1500, timeoutMs: 2000, decimals: 0 },
+  ];
+}
+
 const simulator = {
   remoteUrl: "https://sometimes-women-supported-writings.trycloudflare.com",
   getIntegrationSnapshot: () => ({
@@ -43,6 +58,14 @@ const simulator = {
   saveGarminSettings: (json) => ({ ...json, readOnly: true }),
   getObdSettings: () => ({ enabled: false, adapterType: "Auto", baudRate: null, protocol: "AUTO", readOnly: true }),
   saveObdSettings: (json) => ({ ...json, readOnly: true }),
+  getObdPidMappings: () => ({ profile: "Ford Transit EcoBlue 2.0 2016 - Default", mappings: defaultPidMappings(), readOnly: true }),
+  saveObdPidMappings: (json) => {
+    localStorage.setItem("camper_obd_pid_mappings", JSON.stringify(json.mappings || []));
+    return { profile: "Ford Transit EcoBlue 2.0 2016 - Default", mappings: json.mappings || [], readOnly: true };
+  },
+  resetObdPidMappingsToDefault: () => ({ profile: "Ford Transit EcoBlue 2.0 2016 - Default", mappings: defaultPidMappings(), readOnly: true }),
+  testObdPidMapping: (mapping) => ({ tx: `${mapping.service || "01"}${mapping.pid || ""}`, rx: "simulated", decoded: { value: null, unit: mapping.unit }, readOnly: true }),
+  getObdPidMappingStatus: () => ({ mappings: defaultPidMappings().filter((row) => row.enabled), lastValues: {}, pidErrorCounts: {}, pausedMs: {}, readOnly: true }),
   requestUsbPermission: (kind) => ({ kind, status: "simulated" }),
   scanUsbSerialDevices: () => ({ devices: [], status: { state: "NoDevice", permissionGranted: false, open: false } }),
   getUsbPermissionStatus: () => ({ state: "NoDevice", permissionGranted: false, open: false }),
@@ -186,6 +209,11 @@ export const camperAgentBridge = {
   saveGarminSettings: (settings) => call("saveGarminSettings", { ...settings, readOnly: true }),
   getObdSettings: () => call("getObdSettings"),
   saveObdSettings: (settings) => call("saveObdSettings", { ...settings, readOnly: true }),
+  getObdPidMappings: () => call("getObdPidMappings"),
+  saveObdPidMappings: (settings) => call("saveObdPidMappings", settings),
+  resetObdPidMappingsToDefault: () => call("resetObdPidMappingsToDefault"),
+  testObdPidMapping: (mapping) => call("testObdPidMapping", mapping),
+  getObdPidMappingStatus: () => call("getObdPidMappingStatus"),
   requestUsbPermission: (kind) => call("requestUsbPermission", kind),
   scanUsbSerialDevices: () => call("scanUsbSerialDevices"),
   getUsbPermissionStatus: () => call("getUsbPermissionStatus"),

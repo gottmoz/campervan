@@ -11,6 +11,9 @@ import org.json.JSONObject
 import se.gottmoz.camperagent.integration.canbus.CanDiscoveryRepository
 import se.gottmoz.camperagent.integration.logging.RemoteLogUploader
 import se.gottmoz.camperagent.integration.obd.FordTransitEcoBlue2016Profile
+import se.gottmoz.camperagent.integration.obd.ObdFormulaEvaluator
+import se.gottmoz.camperagent.integration.obd.ObdPidMapping
+import se.gottmoz.camperagent.integration.obd.ObdPidMappingStore
 import se.gottmoz.camperagent.integration.obd.ObdPidDecoder
 import se.gottmoz.camperagent.integration.obd.ObdRepository
 import se.gottmoz.camperagent.integration.obd.ObdResponseParser
@@ -32,11 +35,15 @@ class CamperAgentBridge(context: Context) {
     private val canDiscoveryRepository = CanDiscoveryRepository()
     private val remoteLogUploader = RemoteLogUploader(context.applicationContext)
     private val obdRepository = ObdRepository()
+    private val obdPidMappingStore = ObdPidMappingStore(context.applicationContext)
     private val tcan485Repository = TCan485Repository(TCan485SettingsStore(context.applicationContext))
     private val obdCommandLock = Any()
     private val pidErrorCounts = ConcurrentHashMap<String, Int>()
+    private val pidPausedUntil = ConcurrentHashMap<String, Long>()
+    private val mappedValues = ConcurrentHashMap<String, Any>()
     @Volatile private var obdPolling = false
     @Volatile private var obdConnected = false
+    @Volatile private var obdConnecting = false
     @Volatile private var obdState = "Disconnected"
     @Volatile private var lastObdSuccessEpochMs = 0L
     @Volatile private var lastObdError: String? = null
@@ -136,6 +143,27 @@ class CamperAgentBridge(context: Context) {
 
     @JavascriptInterface fun scanUsbSerialDevices(): String = ok(JSONObject().put("devices", usbSerialManager.enumerateJson()).put("status", usbSerialManager.statusJson()))
     @JavascriptInterface fun getUsbPermissionStatus(): String = ok(usbSerialManager.currentPermissionStatus().let { usbSerialManager.statusJson() })
+    @JavascriptInterface fun getObdPidMappings(): String = ok(obdPidMappingStore.getJson())
+    @JavascriptInterface fun saveObdPidMappings(json: String): String = handle { obdPidMappingStore.save(validatedJson(json)) }
+    @JavascriptInterface fun resetObdPidMappingsToDefault(): String = ok(obdPidMappingStore.reset())
+    @JavascriptInterface fun getObdPidMappingStatus(): String = ok(pidMappingStatusJson())
+    @JavascriptInterface fun testObdPidMapping(json: String): String = handle {
+        val mapping = ObdPidMapping.fromJson(validatedJson(json))
+        require(mapping.service.isNotBlank() && mapping.pid.isNotBlank()) { "Service and PID are required" }
+        require(!isBlockedObdCommand(mapping.command)) { "Blocked unsafe OBD command" }
+        val result = if (usbSerialManager.status.value.open) sendObdCommand(mapping.command, mapping.timeoutMs, "PidMappingTest") else JSONObject()
+            .put("direction", "error")
+            .put("command", mapping.command)
+            .put("error", "USB serial port is not open")
+        val decoded = runCatching { ObdFormulaEvaluator.decode(mapping, result.optString("response")) }.getOrNull()
+        JSONObject()
+            .put("tx", mapping.command)
+            .put("rx", result.optString("response", ""))
+            .put("decoded", decoded ?: JSONObject.NULL)
+            .put("error", result.optString("error", ""))
+            .put("rawLog", obdRepository.rawLogTail())
+            .put("readOnly", true)
+    }
     @JavascriptInterface fun requestUsbPermission(kind: String): String = handle {
         val permissionStatus = usbSerialManager.ensurePermissionFirst(kind)
         val data = JSONObject().put("kind", kind).put("status", usbSerialManager.statusJson()).put("readOnly", true)
@@ -153,10 +181,15 @@ class CamperAgentBridge(context: Context) {
         usbSerialManager.statusJson()
     }
     @JavascriptInterface fun connectObd(json: String): String = handle {
-        if (obdConnected && obdPolling) {
+        if (obdConnected) {
             return@handle obdConnectedJson("Already connected", "", "")
         }
-        obdState = "Connecting"
+        if (obdConnecting) {
+            return@handle vehicleTelemetrySnapshot().put("state", "Connecting").put("message", "OBD connection already in progress")
+        }
+        obdConnecting = true
+        try {
+            obdState = "Connecting"
         val settings = validatedJson(json)
         val baudText = settings.optString("baudRate", "Auto")
         val baud = if (baudText == "Auto") FordTransitEcoBlue2016Profile.autoBaudOrder.first() else baudText.toIntOrNull() ?: 115200
@@ -206,6 +239,9 @@ class CamperAgentBridge(context: Context) {
             .put("lastError", probe.optString("lastError", ""))
             .put("rawLog", obdRepository.rawLogTail())
             .put("readOnly", true)
+        } finally {
+            obdConnecting = false
+        }
     }
     @JavascriptInterface fun disconnectObd(): String = handle {
         obdPolling = false
@@ -359,11 +395,11 @@ class CamperAgentBridge(context: Context) {
         listOf("ATE0", "ATL0", "ATS0", "ATH1", "ATAL", "ATST96", "ATSP6", "ATDP", "ATDPN").forEach { run(it, 2_000) }
         detectedProtocol = rawLogValue("ATDP").ifBlank { "ISO 15765-4 (CAN 11/500)" }
         val supported = run("0100", 5_000)
-        val parsedSupported = ObdResponseParser.parseMode01(supported.optString("response"))
+        val valid0100 = ObdResponseParser.isValid0100Response(supported.optString("response"))
         if (
             supported.optString("response").contains("NO DATA", ignoreCase = true) ||
             supported.optString("direction") == "timeout" ||
-            parsedSupported?.pid != "00"
+            !valid0100
         ) {
             return JSONObject()
                 .put("state", "EcuNoResponse")
@@ -381,6 +417,7 @@ class CamperAgentBridge(context: Context) {
         }
         obdRepository.updateSupportedPids(supportedPids)
         obdConnected = true
+        obdConnecting = false
         lastObdSuccessEpochMs = System.currentTimeMillis()
         lastObdError = null
         obdState = "ObdConnected"
@@ -437,27 +474,32 @@ class CamperAgentBridge(context: Context) {
 
     private fun startObdPolling(supportedPids: Set<String>) {
         if (obdPolling) return
-        val fastPids = listOf("0C", "0D").filter { it in supportedPids }.ifEmpty { listOf("0C", "0D") }
-        val mediumPids = listOf("05", "0F", "11", "10", "42", "46").filter { it in supportedPids }
+        val mappings = obdPidMappingStore.enabledMappings()
+            .ifEmpty { ObdPidMapping.defaults().filter { it.enabled && it.pid.isNotBlank() } }
+        val fastMappings = mappings.filter { it.pollIntervalMs <= 1_000 }
+        val mediumMappings = mappings.filter { it.pollIntervalMs > 1_000 }
         obdPolling = true
         obdState = "Polling"
         runBlocking {
-            remoteLogUploader.uploadLog("INFO", "ObdRepository", "polling start", JSONObject().put("pids", JSONArray((fastPids + mediumPids).distinct())))
+            remoteLogUploader.uploadLog("INFO", "ObdRepository", "polling start", JSONObject().put("pids", JSONArray(mappings.map { it.pid }.distinct())))
         }
         Thread {
             var nextFast = 0L
-            var nextMedium = 0L
             var nextHealth = 0L
+            val nextByFunction = ConcurrentHashMap<String, Long>()
             var recoveryAttempted = false
             while (obdPolling && usbSerialManager.status.value.open) {
                 val now = System.currentTimeMillis()
                 if (now >= nextFast) {
-                    fastPids.forEach { pollPid(it) }
+                    fastMappings.forEach { pollMapping(it) }
                     nextFast = now + 750
                 }
-                if (now >= nextMedium) {
-                    mediumPids.forEach { pollPid(it) }
-                    nextMedium = now + 2_000
+                mediumMappings.forEach { mapping ->
+                    val next = nextByFunction[mapping.functionKey] ?: 0L
+                    if (now >= next) {
+                        pollMapping(mapping)
+                        nextByFunction[mapping.functionKey] = now + mapping.pollIntervalMs
+                    }
                 }
                 if (now >= nextHealth) {
                     val ageMs = if (lastObdSuccessEpochMs == 0L) Long.MAX_VALUE else now - lastObdSuccessEpochMs
@@ -491,19 +533,30 @@ class CamperAgentBridge(context: Context) {
     }
 
     private fun pollPid(pid: String) {
-        val result = sendObdCommand("01$pid", 2_000, "Polling")
+        val mapping = ObdPidMapping.defaults().firstOrNull { it.pid == pid } ?: return
+        pollMapping(mapping)
+    }
+
+    private fun pollMapping(mapping: ObdPidMapping) {
+        val now = System.currentTimeMillis()
+        if ((pidPausedUntil[mapping.functionKey] ?: 0L) > now) return
+        val result = sendObdCommand(mapping.command, mapping.timeoutMs, "Polling")
         val response = result.optString("response")
-        val parsed = ObdResponseParser.parseMode01(response)
-        if (result.optString("direction") == "rx" && parsed?.pid == pid && !response.contains("NO DATA", ignoreCase = true)) {
+        val decoded = runCatching { ObdFormulaEvaluator.decode(mapping, response) }.getOrNull()
+        if (result.optString("direction") == "rx" && decoded != null && !response.contains("NO DATA", ignoreCase = true)) {
             lastObdSuccessEpochMs = System.currentTimeMillis()
             lastObdError = null
             obdState = "Polling"
-            obdRepository.mergeTelemetry(ObdPidDecoder.decodeTelemetry(pid, response))
-            runBlocking { remoteLogUploader.uploadLog("INFO", "ObdRepository", "polling success", JSONObject().put("pid", pid).put("response", response)) }
+            val value = decoded.optDouble("value")
+            mappedValues[mapping.functionKey] = value
+            if (mapping.service == "01") obdRepository.mergeTelemetry(ObdPidDecoder.decodeTelemetry(mapping.pid, response))
+            runBlocking { remoteLogUploader.uploadLog("INFO", "ObdRepository", "polling success", JSONObject().put("pid", mapping.pid).put("functionKey", mapping.functionKey).put("response", response).put("value", value)) }
         } else {
-            pidErrorCounts[pid] = (pidErrorCounts[pid] ?: 0) + 1
+            val errorCount = (pidErrorCounts[mapping.functionKey] ?: 0) + 1
+            pidErrorCounts[mapping.functionKey] = errorCount
+            if (errorCount >= 3) pidPausedUntil[mapping.functionKey] = now + 30_000
             lastObdError = result.optString("error").ifBlank { response.ifBlank { "No valid PID response" } }
-            runBlocking { remoteLogUploader.uploadLog("WARN", "ObdRepository", "polling timeout", JSONObject().put("pid", pid).put("errorCount", pidErrorCounts[pid]).put("lastError", lastObdError)) }
+            runBlocking { remoteLogUploader.uploadLog("WARN", "ObdRepository", "polling timeout", JSONObject().put("pid", mapping.pid).put("functionKey", mapping.functionKey).put("errorCount", errorCount).put("paused", errorCount >= 3).put("lastError", lastObdError)) }
         }
     }
 
@@ -511,8 +564,7 @@ class CamperAgentBridge(context: Context) {
         runBlocking { remoteLogUploader.uploadLog("WARN", "ObdRepository", "recovery start", vehicleTelemetrySnapshot()) }
         val protocol = sendObdCommand("ATDP", 2_000, "Recovery")
         val supported = sendObdCommand("0100", 5_000, "Recovery")
-        val parsed = ObdResponseParser.parseMode01(supported.optString("response"))
-        if (protocol.optString("direction") == "rx" && parsed?.pid == "00") {
+        if (protocol.optString("direction") == "rx" && ObdResponseParser.isValid0100Response(supported.optString("response"))) {
             lastObdSuccessEpochMs = System.currentTimeMillis()
             lastObdError = null
             obdState = "Polling"
@@ -536,6 +588,7 @@ class CamperAgentBridge(context: Context) {
             .put("boostBar", JSONObject.NULL)
             .put("egtTempC", JSONObject.NULL)
             .put("dpfSootPercent", JSONObject.NULL)
+        mappedValues.forEach { (key, value) -> telemetry.put(key, value) }
         return usbSerialManager.statusJson()
             .put("state", if (obdConnected) obdState else usbSerialManager.status.value.state.name)
             .put("connected", obdConnected)
@@ -551,6 +604,20 @@ class CamperAgentBridge(context: Context) {
             .put("supportedPids", obdRepository.telemetryJson().optJSONArray("supportedPids") ?: JSONArray())
             .put("pidErrorCounts", errors)
             .put("telemetry", telemetry)
+    }
+
+    private fun pidMappingStatusJson(): JSONObject {
+        val paused = JSONObject()
+        val now = System.currentTimeMillis()
+        pidPausedUntil.toSortedMap().forEach { (key, until) ->
+            paused.put(key, if (until > now) until - now else 0)
+        }
+        return JSONObject()
+            .put("mappings", ObdPidMapping.toJsonArray(obdPidMappingStore.enabledMappings()))
+            .put("lastValues", JSONObject(mappedValues.toMap()))
+            .put("pidErrorCounts", JSONObject(pidErrorCounts.toMap()))
+            .put("pausedMs", paused)
+            .put("readOnly", true)
     }
 
     private fun obdConnectedJson(message: String, lastTx: String, lastRx: String): JSONObject = JSONObject()

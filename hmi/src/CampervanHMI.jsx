@@ -57,7 +57,8 @@ import { EngineDetailsView } from "./components/vehicle/EngineDetailsView";
 const VAN_BACKGROUND_URL = "assets/ford-transit-clean-bg.png";
 const DESIGN_WIDTH = 1080;
 const DESIGN_HEIGHT = 600;
-const MEDIA_UNIT_SAFE_HEIGHT = 560;
+const MIN_AUTO_SCALE = 0.92;
+const DISPLAY_FIT_KEY = "camper_display_fit_settings";
 
 const DEFAULT_BMS = {
   profile: { displayName: "PUPVWMHB 12V 320Ah LiFePO4 250A BMS", capacityAh: 320, nominalVoltage: 12.8, bmsContinuousCurrentAmp: 250 },
@@ -1265,6 +1266,136 @@ function Tcan485GatewayModal({ onClose }) {
     </ModalShell>
   );
 }
+
+function ModalFrame({ title, onClose, children }) {
+  return (
+    <motion.div className="absolute inset-0 z-50 flex items-center justify-center bg-black/55 p-6 backdrop-blur-md" onClick={onClose} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+      <motion.div className="h-[520px] w-[900px] rounded-[2rem] border border-white/15 bg-slate-950/92 p-5 shadow-2xl shadow-cyan-950/40" onClick={(event) => event.stopPropagation()} initial={{ scale: 0.96, y: 16 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.96, y: 16 }}>
+        <div className="mb-4 flex items-center justify-between">
+          <div className="text-xl font-black text-white">{title}</div>
+          <button onClick={onClose} className="rounded-2xl bg-white/[0.08] px-3 py-2 text-sm font-black text-white">X</button>
+        </div>
+        <div className="h-[450px] min-h-0">{children}</div>
+      </motion.div>
+    </motion.div>
+  );
+}
+
+function DisplayFitSettingsModal({ settings, scale, onSave, onClose }) {
+  const [draft, setDraft] = useState(settings);
+  const update = (patch) => setDraft((current) => ({ ...current, ...patch }));
+  const reset = () => setDraft({ autoFit: true, manualScale: 1, offsetY: 0 });
+  return (
+    <ModalFrame title="Display / Screen Fit" onClose={onClose}>
+      <div className="grid h-full grid-cols-[1fr_1fr] gap-4">
+        <div className="space-y-4 rounded-3xl border border-white/10 bg-white/[0.045] p-4">
+          <label className="flex items-center justify-between text-sm font-bold text-white">
+            Auto fit
+            <input type="checkbox" checked={draft.autoFit} onChange={(e) => update({ autoFit: e.target.checked })} />
+          </label>
+          <div>
+            <div className="mb-2 flex justify-between text-xs font-bold text-slate-300"><span>Scale</span><span>{draft.autoFit ? `auto ${scale.toFixed(2)}` : Number(draft.manualScale).toFixed(2)}</span></div>
+            <input type="range" min="0.9" max="1" step="0.01" disabled={draft.autoFit} value={draft.manualScale ?? 1} onChange={(e) => update({ manualScale: Number(e.target.value) })} className="w-full" />
+          </div>
+          <div>
+            <div className="mb-2 flex justify-between text-xs font-bold text-slate-300"><span>Vertical offset</span><span>{draft.offsetY ?? 0}px</span></div>
+            <input type="range" min="-40" max="40" step="1" value={draft.offsetY ?? 0} onChange={(e) => update({ offsetY: Number(e.target.value) })} className="w-full" />
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => { onSave(draft); onClose(); }} className="rounded-2xl bg-cyan-300 px-4 py-2 text-sm font-black text-slate-950">Save</button>
+            <button onClick={reset} className="rounded-2xl bg-white/[0.08] px-4 py-2 text-sm font-black text-white">Reset display fit</button>
+          </div>
+        </div>
+        <div className="rounded-3xl border border-cyan-300/20 bg-slate-950/60 p-4 text-sm text-slate-300">
+          <div className="text-lg font-black text-white">Current fit</div>
+          <div className="mt-3 space-y-2">
+            <div>Design: 1080 x 600</div>
+            <div>Scale clamp: 0.92 - 1.00 in auto mode</div>
+            <div>Current scale: {scale.toFixed(3)}</div>
+            <div>Offset: {draft.offsetY ?? 0}px</div>
+          </div>
+        </div>
+      </div>
+    </ModalFrame>
+  );
+}
+
+function ObdPidMappingSettingsModal({ onClose }) {
+  const [tab, setTab] = useState("main");
+  const [mappings, setMappings] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [status, setStatus] = useState("");
+  const mainKeys = ["speedKph", "rpm", "coolantTempC", "oilTempC", "outsideTempC"];
+  const formulaPresets = ["A", "A-40", "((A*256)+B)/4", "((A*256)+B)/100", "((A*256)+B)/1000", "A*100/255", "A-125", "((A*256)+B)*0.05", "custom future"];
+
+  useEffect(() => {
+    camperAgentBridge.getObdPidMappings().then((result) => {
+      if (result.ok) setMappings(result.data.mappings || []);
+    });
+  }, []);
+
+  const visible = mappings.filter((row) => tab === "main" ? mainKeys.includes(row.functionKey) : !mainKeys.includes(row.functionKey));
+  const updateSelected = (patch) => setSelected((current) => ({ ...current, ...patch }));
+  const saveSelected = async () => {
+    const next = mappings.map((row) => row.functionKey === selected.functionKey ? selected : row);
+    setMappings(next);
+    const result = await camperAgentBridge.saveObdPidMappings({ mappings: next });
+    setStatus(result.ok ? "Saved PID mappings" : result.error);
+  };
+  const reset = async () => {
+    const result = await camperAgentBridge.resetObdPidMappingsToDefault();
+    if (result.ok) setMappings(result.data.mappings || []);
+    setStatus(result.ok ? "Reset to Ford defaults" : result.error);
+  };
+  const test = async () => {
+    const result = await camperAgentBridge.testObdPidMapping(selected);
+    setStatus(result.ok ? `TX ${result.data.tx} RX ${result.data.rx || "--"} value ${result.data.decoded?.value ?? "--"}` : result.error);
+  };
+
+  return (
+    <ModalFrame title="OBD PID Mapping" onClose={onClose}>
+      <div className="grid h-full grid-cols-[1fr_340px] gap-4">
+        <div className="min-h-0 rounded-3xl border border-white/10 bg-white/[0.04] p-4">
+          <div className="mb-3 flex gap-2">
+            <button onClick={() => setTab("main")} className={cx("rounded-xl px-3 py-2 text-xs font-black", tab === "main" ? "bg-cyan-300 text-slate-950" : "bg-white/[0.07] text-white")}>Main Dashboard</button>
+            <button onClick={() => setTab("engine")} className={cx("rounded-xl px-3 py-2 text-xs font-black", tab === "engine" ? "bg-cyan-300 text-slate-950" : "bg-white/[0.07] text-white")}>Engine Details</button>
+            <button onClick={reset} className="ml-auto rounded-xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Reset</button>
+          </div>
+          <div className="max-h-[395px] space-y-2 overflow-y-auto pr-1">
+            {visible.map((row) => (
+              <button key={row.functionKey} onClick={() => setSelected(row)} className="grid w-full grid-cols-[1fr_70px_80px_70px] items-center gap-2 rounded-2xl border border-white/10 bg-slate-950/55 px-3 py-2 text-left text-xs hover:bg-white/[0.08]">
+                <div><div className="font-black text-white">{row.label}</div><div className="text-slate-400">{row.mode}</div></div>
+                <div className={row.enabled ? "text-emerald-300" : "text-slate-500"}>{row.enabled ? "Enabled" : "Off"}</div>
+                <div className="font-mono text-cyan-200">{row.service}{row.pid}</div>
+                <div className="text-right text-slate-300">{row.unit}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="h-full min-h-0 overflow-y-auto rounded-3xl border border-cyan-300/20 bg-slate-950/70 p-4">
+          {selected ? (
+            <div className="space-y-2 text-xs">
+              <label className="flex items-center gap-2 font-bold text-white"><input type="checkbox" checked={selected.enabled} onChange={(e) => updateSelected({ enabled: e.target.checked })} /> Enabled</label>
+              {["label", "functionKey", "mode", "service", "pid", "unit"].map((field) => (
+                <label key={field} className="block text-slate-300">{field}<input value={selected[field] ?? ""} onChange={(e) => updateSelected({ [field]: e.target.value })} className="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 font-mono text-white" /></label>
+              ))}
+              <label className="block text-slate-300">Formula preset<select value={selected.formula} onChange={(e) => updateSelected({ formula: e.target.value })} className="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 text-white">{formulaPresets.map((item) => <option key={item}>{item}</option>)}</select></label>
+              <div className="grid grid-cols-2 gap-2">
+                <label className="text-slate-300">Poll ms<input type="number" value={selected.pollIntervalMs ?? 2000} onChange={(e) => updateSelected({ pollIntervalMs: Number(e.target.value) })} className="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 text-white" /></label>
+                <label className="text-slate-300">Timeout ms<input type="number" value={selected.timeoutMs ?? 2000} onChange={(e) => updateSelected({ timeoutMs: Number(e.target.value) })} className="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 text-white" /></label>
+              </div>
+              <div className="flex gap-2 pt-2">
+                <button onClick={test} className="rounded-xl bg-white/[0.08] px-3 py-2 font-black text-white">Test PID</button>
+                <button onClick={saveSelected} className="rounded-xl bg-cyan-300 px-3 py-2 font-black text-slate-950">Save</button>
+              </div>
+              <div className="max-h-16 overflow-auto rounded-xl bg-black/25 p-2 font-mono text-[10px] text-cyan-100">{status || "No test yet"}</div>
+            </div>
+          ) : <div className="flex h-full items-center justify-center text-sm text-slate-400">Select a mapping row</div>}
+        </div>
+      </div>
+    </ModalFrame>
+  );
+}
 function BatteryBmsSettingsModal({ onClose }) {
   const [tab, setTab] = useState("Overview");
   const [canStatus, setCanStatus] = useState("Passive listen ready");
@@ -1346,6 +1477,8 @@ function SystemsView({ state, setters, openIntegrationSettings }) {
         <div className="max-h-[390px] space-y-2 overflow-y-auto pr-1">
           {[
             ["Ford OBD / vLinker", "USB vLinker, ISO15765-4 CAN11/500, PIDs, DTC read-only", "obd"],
+            ["Vehicle Dashboard", "Live gauges, vehicle display, mapped OBD values", null],
+            ["OBD PID Mapping", "Map Ford values to custom OBD PIDs and formulas", "obdPidMapping"],
             ["T-CAN485 Gateway", "Android hotspot, UDP discovery, RS485 BMS gateway", "tcan485"],
             ["Battery / BMS", "12V 320Ah LiFePO4, 250A BMS, Bluetooth + CAN", "battery"],
             ["Victron System", "SmartSolar MPPT 100/20 and Orion-Tr 12/12V 18A", "victron"],
@@ -1353,6 +1486,7 @@ function SystemsView({ state, setters, openIntegrationSettings }) {
             ["Garmin / NMEA", "NMEA 2000, EmpirBus discovery, Garmin network data", "garmin"],
             ["CAN Bus Scanner", "Ford OBD, NMEA 2000, BMS-CAN profiles", "canbus"],
             ["Remote Logging / Cloudflare", "Live logs, diagnostics upload, tunnel status", "remoteLogging"],
+            ["Display / Screen Fit", "Scale and vertical offset for the Android media unit", "displayFit"],
             ["Integration Health", "Adapters, permissions, last update, logs", "health"],
             ["Network", "Wi-Fi, Bluetooth, hotspot, MQTT broker"],
             ["Service", "Logs, firmware, backup, factory reset"],
@@ -1376,6 +1510,13 @@ export default function CampervanHMI() {
   const [activeScene, setActiveScene] = useState("camp");
   const [showEnergyStats, setShowEnergyStats] = useState(false);
   const [integrationModal, setIntegrationModal] = useState(null);
+  const [displayFit, setDisplayFit] = useState(() => {
+    try {
+      return { autoFit: true, manualScale: 1, offsetY: 0, ...JSON.parse(localStorage.getItem(DISPLAY_FIT_KEY) || "{}") };
+    } catch {
+      return { autoFit: true, manualScale: 1, offsetY: 0 };
+    }
+  });
   const [hmiScale, setHmiScale] = useState(1);
 
   const [battery, setBattery] = useState(87);
@@ -1404,9 +1545,11 @@ export default function CampervanHMI() {
 
   useEffect(() => {
     const updateScale = () => {
-      const availableWidth = window.innerWidth;
-      const availableHeight = Math.min(window.innerHeight, MEDIA_UNIT_SAFE_HEIGHT);
-      setHmiScale(Math.min(availableWidth / DESIGN_WIDTH, availableHeight / DESIGN_HEIGHT, 1));
+      const availableWidth = window.innerWidth || DESIGN_WIDTH;
+      const availableHeight = window.innerHeight || DESIGN_HEIGHT;
+      const rawScale = Math.min(availableWidth / DESIGN_WIDTH, availableHeight / DESIGN_HEIGHT, 1);
+      const safeScale = displayFit.autoFit ? Math.max(rawScale, MIN_AUTO_SCALE) : Number(displayFit.manualScale || 1);
+      setHmiScale(Math.min(1, Math.max(0.9, safeScale)));
     };
     updateScale();
     window.addEventListener("resize", updateScale);
@@ -1415,7 +1558,12 @@ export default function CampervanHMI() {
       window.removeEventListener("resize", updateScale);
       window.removeEventListener("orientationchange", updateScale);
     };
-  }, []);
+  }, [displayFit]);
+
+  const saveDisplayFit = (next) => {
+    setDisplayFit(next);
+    localStorage.setItem(DISPLAY_FIT_KEY, JSON.stringify(next));
+  };
 
   const state = {
     battery,
@@ -1488,8 +1636,8 @@ export default function CampervanHMI() {
   }, [activeTab, state, setters]);
 
   return (
-    <div className="flex h-screen w-screen items-start justify-center overflow-hidden bg-slate-950 text-slate-100">
-      <div style={{ width: DESIGN_WIDTH, height: DESIGN_HEIGHT, transform: `scale(${hmiScale})`, transformOrigin: "top center" }} className="relative overflow-hidden rounded-[2.25rem] border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.16),transparent_30%),radial-gradient(circle_at_bottom_right,rgba(168,85,247,0.18),transparent_35%),linear-gradient(135deg,#020617,#0f172a_45%,#020617)] shadow-2xl shadow-black">
+    <div className="fixed inset-0 h-screen w-screen overflow-hidden bg-slate-950 text-slate-100">
+      <div style={{ width: DESIGN_WIDTH, height: DESIGN_HEIGHT, transform: `translateX(-50%) translateY(${Number(displayFit.offsetY || 0)}px) scale(${hmiScale})`, transformOrigin: "top center" }} className="absolute left-1/2 top-0 overflow-hidden rounded-[2.25rem] border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.16),transparent_30%),radial-gradient(circle_at_bottom_right,rgba(168,85,247,0.18),transparent_35%),linear-gradient(135deg,#020617,#0f172a_45%,#020617)] shadow-2xl shadow-black">
         <div
           className="pointer-events-none absolute inset-0 bg-cover bg-center opacity-70"
           style={{ backgroundImage: `url(${VAN_BACKGROUND_URL})` }}
@@ -1525,6 +1673,8 @@ export default function CampervanHMI() {
           {integrationModal === "victron" && <VictronSettingsModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "garmin" && <GarminSettingsModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "obd" && <ObdSettingsModal onClose={() => setIntegrationModal(null)} />}
+          {integrationModal === "obdPidMapping" && <ObdPidMappingSettingsModal onClose={() => setIntegrationModal(null)} />}
+          {integrationModal === "displayFit" && <DisplayFitSettingsModal settings={displayFit} scale={hmiScale} onSave={saveDisplayFit} onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "health" && <IntegrationsHealthModal onClose={() => setIntegrationModal(null)} />}
         </AnimatePresence>
         </div>

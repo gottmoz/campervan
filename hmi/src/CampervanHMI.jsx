@@ -933,6 +933,80 @@ function CanBusScannerModal({ onClose }) {
   );
 }
 
+function RemoteLoggingSettingsModal({ onClose }) {
+  const defaultUrl = "https://sometimes-women-supported-writings.trycloudflare.com";
+  const [enabled, setEnabled] = useState(true);
+  const [serverUrl, setServerUrl] = useState(defaultUrl);
+  const [server, setServer] = useState("Unknown");
+  const [lastUpload, setLastUpload] = useState("--");
+  const [lastError, setLastError] = useState("--");
+  const [logs, setLogs] = useState([]);
+  async function save() {
+    const result = await camperAgentBridge.saveRemoteLoggingSettings({ enabled, serverUrl });
+    setLastError(result.ok ? "--" : result.error || "Save failed");
+  }
+  async function test() {
+    await save();
+    const result = await camperAgentBridge.testRemoteLoggingServer();
+    setServer(result.ok ? "Online" : "Offline");
+    setLastError(result.ok ? "--" : result.error || "Connection failed");
+  }
+  async function upload() {
+    await save();
+    const result = await camperAgentBridge.uploadDiagnosticsNow();
+    setLastUpload(result.ok ? new Date().toLocaleTimeString() : "--");
+    setLastError(result.ok ? "--" : result.error || "Upload failed");
+  }
+  async function fetchLogs() {
+    const result = await camperAgentBridge.fetchLatestRemoteLogs();
+    const lines = result.ok ? result.data?.lines || result.data?.data?.lines || [] : [];
+    setLogs(lines.slice(-20));
+    setLastError(result.ok ? "--" : result.error || "Fetch logs failed");
+  }
+  function tunnelMessage() {
+    setLastError("Tunnel is already started from the PC with scripts/start-local-update-tunnel.ps1. Android cannot run PowerShell directly.");
+  }
+  return (
+    <ModalShell title="Remote Logging / Cloudflare" subtitle="Live logs, diagnostics upload, tunnel status" icon={Wifi} onClose={onClose}>
+      <div className="grid h-full grid-cols-[360px_1fr] gap-4">
+        <div className="space-y-3">
+          <button onClick={() => setEnabled(!enabled)} className="flex w-full items-center justify-between rounded-2xl border border-white/10 bg-white/[0.045] p-3 text-left">
+            <span className="text-sm font-black text-white">Remote logging enabled</span><span className="text-cyan-100">{enabled ? "ON" : "OFF"}</span>
+          </button>
+          <SettingField label="Server URL"><input value={serverUrl} onChange={(e) => setServerUrl(e.target.value)} className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white outline-none" /></SettingField>
+          <div className="rounded-2xl border border-white/10 bg-white/[0.045] p-3 text-xs text-slate-300">
+            <div>Local PC: http://127.0.0.1:8787</div>
+            <div className="mt-2">LAN: http://172.18.96.1:8787</div>
+            <div className="mt-2 break-all">Tunnel: {defaultUrl}</div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick={test} className="rounded-2xl bg-cyan-300 px-3 py-2 text-xs font-black text-slate-950">Test connection</button>
+            <button onClick={upload} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Upload diagnostics</button>
+            <button onClick={fetchLogs} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Fetch latest logs</button>
+            <button onClick={() => navigator.clipboard?.writeText(serverUrl)} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Copy public URL</button>
+            <button onClick={upload} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Export local diagnostics</button>
+            <button onClick={tunnelMessage} className="rounded-2xl bg-white/[0.03] px-3 py-2 text-xs font-black text-slate-500">Start tunnel</button>
+            <button onClick={tunnelMessage} className="rounded-2xl bg-white/[0.03] px-3 py-2 text-xs font-black text-slate-500">Stop tunnel</button>
+          </div>
+        </div>
+        <div className="grid grid-rows-[auto_1fr] gap-4">
+          <div className="grid grid-cols-3 gap-3">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.045] p-3"><div className="text-xs text-slate-400">Server</div><div className="text-lg font-black text-white">{server}</div></div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.045] p-3"><div className="text-xs text-slate-400">Last upload</div><div className="text-lg font-black text-white">{lastUpload}</div></div>
+            <div className="rounded-2xl border border-white/10 bg-white/[0.045] p-3"><div className="text-xs text-slate-400">Last error</div><div className="text-sm font-bold text-amber-100">{lastError}</div></div>
+          </div>
+          <div className="overflow-hidden rounded-3xl border border-white/10 bg-black/30 p-4">
+            <div className="mb-2 text-sm font-black text-white">Latest log lines</div>
+            <div className="h-[300px] overflow-y-auto font-mono text-[11px] leading-5 text-slate-300">
+              {logs.length === 0 ? "No logs loaded." : logs.map((line, index) => <div key={index}>{typeof line === "string" ? line : JSON.stringify(line)}</div>)}
+            </div>
+          </div>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
 function BatteryBmsSettingsModal({ onClose }) {
   const [tab, setTab] = useState("Overview");
   const [canStatus, setCanStatus] = useState("Passive listen ready");
@@ -1015,6 +1089,7 @@ function SystemsView({ state, setters, openIntegrationSettings }) {
           {[
             ["Ford OBD / vLinker", "USB vLinker, ISO15765-4 CAN11/500, PIDs, DTC read-only", "obd"],
             ["CAN Bus Scanner", "Ford OBD, NMEA 2000, BMS-CAN profiles", "canbus"],
+            ["Remote Logging / Cloudflare", "Live logs, diagnostics upload, tunnel status", "remoteLogging"],
             ["Battery / BMS", "12V 320Ah LiFePO4, 250A BMS, Bluetooth + CAN", "battery"],
             ["Power Integrations", "SmartSolar, Renogy 40A, Orion-Tr, shore charging"],
             ["Victron System", "SmartSolar MPPT 100/20 and Orion-Tr 12/12V 18A", "victron"],
@@ -1182,6 +1257,7 @@ export default function CampervanHMI() {
         <AnimatePresence>
           {integrationModal === "battery" && <BatteryBmsSettingsModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "canbus" && <CanBusScannerModal onClose={() => setIntegrationModal(null)} />}
+          {integrationModal === "remoteLogging" && <RemoteLoggingSettingsModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "victron" && <VictronSettingsModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "garmin" && <GarminSettingsModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "obd" && <ObdSettingsModal onClose={() => setIntegrationModal(null)} />}

@@ -16,6 +16,7 @@ venv/
 *.pyc
 
 bridge/data/
+local-vps/
 logs/
 *.log
 *.hprof
@@ -27,3 +28,4 @@ app/src/main/assets/hmi/
 
 external/
 tools/bin/
+tools/remote-queue/data/

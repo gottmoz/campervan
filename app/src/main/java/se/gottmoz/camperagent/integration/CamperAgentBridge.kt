@@ -1,17 +1,30 @@
 package se.gottmoz.camperagent.integration
 
 import android.content.Context
+import android.os.Build
 import android.webkit.JavascriptInterface
+import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
 import org.json.JSONObject
 import se.gottmoz.camperagent.integration.canbus.CanDiscoveryRepository
+import se.gottmoz.camperagent.integration.logging.RemoteLogUploader
 import se.gottmoz.camperagent.integration.obd.FordTransitEcoBlue2016Profile
+import se.gottmoz.camperagent.integration.obd.ObdRepository
 import se.gottmoz.camperagent.integration.usbserial.UsbSerialManager
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 class CamperAgentBridge(context: Context) {
+    private val appContext = context.applicationContext
     private val settingsStore = IntegrationSettingsStore(context.applicationContext)
     private val repository = IntegrationRepository(settingsStore)
     private val usbSerialManager = UsbSerialManager(context.applicationContext)
     private val canDiscoveryRepository = CanDiscoveryRepository()
+    private val remoteLogUploader = RemoteLogUploader(context.applicationContext)
+    private val obdRepository = ObdRepository()
 
     @JavascriptInterface fun getIntegrationSnapshot(): String = ok(repository.snapshot())
     @JavascriptInterface fun getBatteryBmsSnapshot(): String = ok(repository.batteryBmsSnapshot())
@@ -19,6 +32,32 @@ class CamperAgentBridge(context: Context) {
     @JavascriptInterface fun getVictronSettings(): String = ok(settingsStore.getVictronSettings())
     @JavascriptInterface fun getGarminSettings(): String = ok(settingsStore.getGarminSettings())
     @JavascriptInterface fun getObdSettings(): String = ok(settingsStore.getObdSettings())
+    @JavascriptInterface fun getRemoteLoggingSettings(): String = ok(remoteLogUploader.settings())
+
+    @JavascriptInterface fun saveRemoteLoggingSettings(json: String): String = handle {
+        val parsed = validatedJson(json)
+        remoteLogUploader.setEnabled(parsed.optBoolean("enabled", true))
+        remoteLogUploader.setServerUrl(parsed.optString("serverUrl", RemoteLogUploader.DEFAULT_URL))
+        runBlocking { remoteLogUploader.uploadLog("INFO", "RemoteLogging", "tunnel/server settings changed", remoteLogUploader.settings()) }
+        remoteLogUploader.settings()
+    }
+
+    @JavascriptInterface fun testRemoteLoggingServer(): String = handle {
+        runBlocking { remoteLogUploader.testConnection() }
+    }
+
+    @JavascriptInterface fun getRemoteRuntimeStatus(): String = handle {
+        runBlocking { remoteLogUploader.runtimeStatus() }
+    }
+
+    @JavascriptInterface fun fetchLatestRemoteLogs(): String = handle {
+        runBlocking { remoteLogUploader.latestLogs() }
+    }
+
+    @JavascriptInterface fun uploadDiagnosticsNow(): String = handle {
+        val diagnostics = diagnosticsJson()
+        runBlocking { remoteLogUploader.uploadDiagnostics(diagnostics) }
+    }
 
     @JavascriptInterface
     fun saveVictronSettings(json: String): String = handle {
@@ -52,7 +91,9 @@ class CamperAgentBridge(context: Context) {
     @JavascriptInterface fun getUsbPermissionStatus(): String = ok(usbSerialManager.statusJson())
     @JavascriptInterface fun requestUsbPermission(kind: String): String = handle {
         usbSerialManager.requestPermissionFirst(kind)
-        JSONObject().put("kind", kind).put("status", usbSerialManager.statusJson()).put("readOnly", true)
+        val data = JSONObject().put("kind", kind).put("status", usbSerialManager.statusJson()).put("readOnly", true)
+        runBlocking { remoteLogUploader.uploadLog("INFO", "UsbSerialManager", "USB permission requested", data) }
+        data
     }
     @JavascriptInterface fun openUsbSerial(json: String): String = handle {
         val baud = validatedJson(json).optInt("baudRate", 115200)
@@ -66,13 +107,25 @@ class CamperAgentBridge(context: Context) {
     @JavascriptInterface fun connectObd(json: String): String = handle {
         val settings = validatedJson(json)
         val baud = if (settings.optString("baudRate", "Auto") == "Auto") FordTransitEcoBlue2016Profile.autoBaudOrder.first() else settings.optInt("baudRate", 115200)
+        obdRepository.addLog("state", state = "OBD connect started")
+        runBlocking { remoteLogUploader.uploadLog("INFO", "ObdRepository", "OBD connect started", JSONObject().put("baudRate", baud).put("protocol", "ISO15765-4 CAN 11/500")) }
         usbSerialManager.openFirst(baud)
+        val open = usbSerialManager.status.value.open
+        if (open) {
+            listOf("ATI", "AT@1", "ATZ", "ATSP6", "ATDP", "ATDPN", "0100").forEach {
+                obdRepository.addLog("tx", command = it, state = "AdapterProbing")
+                runBlocking { remoteLogUploader.uploadLog("INFO", "ObdRepository", "OBD probe step", JSONObject().put("command", it).put("state", "AdapterProbing")) }
+            }
+        } else {
+            obdRepository.addLog("error", state = usbSerialManager.status.value.state.name, response = usbSerialManager.status.value.error)
+        }
         JSONObject()
-            .put("state", if (usbSerialManager.status.value.open) "Serial open" else usbSerialManager.status.value.state.name)
+            .put("state", if (open) "Serial open" else usbSerialManager.status.value.state.name)
             .put("baudRate", baud)
             .put("protocol", "ISO15765-4 CAN 11/500")
             .put("elmProtocol", FordTransitEcoBlue2016Profile.preferredElmProtocol)
             .put("initSequence", org.json.JSONArray(FordTransitEcoBlue2016Profile.initSequence))
+            .put("message", if (open) "Serial is open. If adapter does not answer ATI, try another baud rate." else usbSerialManager.status.value.error ?: "")
             .put("readOnly", true)
     }
     @JavascriptInterface fun disconnectObd(): String = handle {
@@ -108,7 +161,14 @@ class CamperAgentBridge(context: Context) {
     @JavascriptInterface fun startNmea2000Scan(json: String): String = startCanScan(json)
     @JavascriptInterface fun stopNmea2000Scan(): String = stopCanScan()
     @JavascriptInterface fun getNmea2000Snapshot(): String = ok(canDiscoveryRepository.snapshot())
-    @JavascriptInterface fun exportIntegrationDiagnostics(): String = ok(repository.snapshot())
+    @JavascriptInterface fun exportIntegrationDiagnostics(): String = handle {
+        val json = diagnosticsJson()
+        val path = diagnosticsFile()
+        path.parentFile?.mkdirs()
+        path.writeText(json.toString(2), Charsets.UTF_8)
+        runBlocking { remoteLogUploader.uploadLog("INFO", "Diagnostics", "diagnostics export created", JSONObject().put("path", path.absolutePath)) }
+        JSONObject().put("path", path.absolutePath).put("json", json)
+    }
 
     fun close() {
         usbSerialManager.dispose()
@@ -131,6 +191,38 @@ class CamperAgentBridge(context: Context) {
 
     private fun ok(data: JSONObject): String = JSONObject().put("ok", true).put("data", data).toString()
     private fun fail(error: String): String = JSONObject().put("ok", false).put("error", error).toString()
+
+    private fun diagnosticsJson(): JSONObject = JSONObject()
+        .put("timestamp", nowIso())
+        .put("appVersion", "0.1.0")
+        .put("android", JSONObject()
+            .put("manufacturer", Build.MANUFACTURER)
+            .put("model", Build.MODEL)
+            .put("sdk", Build.VERSION.SDK_INT))
+        .put("usbStatus", usbSerialManager.statusJson())
+        .put("obdState", usbSerialManager.status.value.state.name)
+        .put("obdRawLogTail", obdRepository.rawLogTail())
+        .put("obdSettings", settingsStore.getObdSettings())
+        .put("vLinker", JSONObject()
+            .put("vendorId", usbSerialManager.status.value.vendorId ?: JSONObject.NULL)
+            .put("productId", usbSerialManager.status.value.productId ?: JSONObject.NULL)
+            .put("lastPermissionState", usbSerialManager.status.value.state.name))
+        .put("victronStatus", JSONObject().put("state", "Offline").put("readOnly", true))
+        .put("garminStatus", JSONObject().put("state", "Offline").put("readOnly", true))
+        .put("bmsStatus", repository.batteryBmsSnapshot())
+        .put("remoteLoggingSettings", remoteLogUploader.settings())
+        .put("recentErrors", JSONArray())
+
+    private fun diagnosticsFile(): File {
+        val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date())
+        return File(appContext.getExternalFilesDir("diagnostics"), "camper-diagnostics-$stamp.json")
+    }
+
+    private fun nowIso(): String {
+        val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US)
+        format.timeZone = TimeZone.getTimeZone("UTC")
+        return format.format(Date())
+    }
 
     private fun isBlockedObdCommand(command: String): Boolean {
         val service = command.take(2)

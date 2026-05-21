@@ -1,4 +1,5 @@
 const simulator = {
+  remoteUrl: "https://sometimes-women-supported-writings.trycloudflare.com",
   getIntegrationSnapshot: () => ({
     mode: "simulated",
     readOnly: true,
@@ -62,6 +63,31 @@ const simulator = {
   getCanScanSnapshot: () => ({ frames: [], readOnly: true }),
   scanNmeaBus: () => ({ state: "Simulated", pgnCount: 3, readOnly: true }),
   exportIntegrationDiagnostics: () => ({ exportedAt: new Date().toISOString(), mode: "simulated" }),
+  getRemoteLoggingSettings: () => ({ enabled: true, serverUrl: simulator.remoteUrl }),
+  saveRemoteLoggingSettings: (json) => {
+    simulator.remoteUrl = json.serverUrl || simulator.remoteUrl;
+    return { enabled: json.enabled !== false, serverUrl: simulator.remoteUrl };
+  },
+  testRemoteLoggingServer: async () => {
+    const response = await fetch(`${simulator.remoteUrl}/health`);
+    return response.json();
+  },
+  uploadDiagnosticsNow: async () => {
+    const response = await fetch(`${simulator.remoteUrl}/api/diagnostics/upload`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ timestamp: new Date().toISOString(), source: "hmi-desktop", mode: "simulated" }),
+    });
+    return response.json();
+  },
+  getRemoteRuntimeStatus: async () => {
+    const response = await fetch(`${simulator.remoteUrl}/api/runtime/status`);
+    return response.json();
+  },
+  fetchLatestRemoteLogs: async () => {
+    const response = await fetch(`${simulator.remoteUrl}/api/logs/latest`);
+    return response.json();
+  },
   scanBatteryCan: () => ({ state: "PassiveListenReady", frames: [], readOnly: true }),
   startBatteryCanScan: (json) => ({ state: "PassiveScanStarted", profile: json.profileId || "battery_bms", readOnly: true }),
   stopBatteryCanScan: () => ({ state: "Stopped", readOnly: true }),
@@ -122,6 +148,12 @@ export const camperAgentBridge = {
   getCanScanSnapshot: () => call("getCanScanSnapshot"),
   scanNmeaBus: () => call("scanNmeaBus"),
   exportIntegrationDiagnostics: () => call("exportIntegrationDiagnostics"),
+  getRemoteLoggingSettings: () => call("getRemoteLoggingSettings"),
+  saveRemoteLoggingSettings: (settings) => call("saveRemoteLoggingSettings", settings),
+  testRemoteLoggingServer: () => call("testRemoteLoggingServer"),
+  uploadDiagnosticsNow: () => call("uploadDiagnosticsNow"),
+  getRemoteRuntimeStatus: () => call("getRemoteRuntimeStatus"),
+  fetchLatestRemoteLogs: () => call("fetchLatestRemoteLogs"),
   scanBatteryCan: () => call("scanBatteryCan"),
   startBatteryCanScan: (profile) => call("startBatteryCanScan", profile),
   stopBatteryCanScan: () => call("stopBatteryCanScan"),

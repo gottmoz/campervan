@@ -22,8 +22,8 @@ export function FuturisticGauge({ label, value, min = 0, max = 100, unit = "", m
   const display = hasValue ? (formatter ? formatter(value) : Math.round(value)) : "--";
 
   return (
-    <div className={`relative h-full min-h-0 overflow-hidden border bg-slate-950/75 shadow-2xl backdrop-blur-xl [clip-path:polygon(7%_0,93%_0,100%_9%,100%_91%,93%_100%,7%_100%,0_91%,0_9%)] ${stale ? "border-amber-300/35 shadow-amber-500/10" : "border-cyan-300/40 shadow-cyan-500/20"}`}>
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(34,211,238,0.14),transparent_42%),linear-gradient(180deg,rgba(14,165,233,0.06),transparent)]" />
+    <div className={`relative h-full min-h-0 overflow-hidden ${stale ? "shadow-amber-500/10" : "shadow-cyan-500/20"}`}>
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(34,211,238,0.12),transparent_42%)]" />
       <svg viewBox="0 0 360 360" className="absolute inset-0 h-full w-full">
         <circle cx="180" cy="180" r="142" fill="none" stroke="rgba(34,211,238,0.18)" strokeWidth="2" />
         <circle cx="180" cy="180" r="118" fill="none" stroke="rgba(34,211,238,0.12)" strokeWidth="1" />
@@ -66,11 +66,11 @@ export function FuturisticGauge({ label, value, min = 0, max = 100, unit = "", m
         />
         <circle cx="180" cy="180" r="16" fill="#020617" stroke={accent} strokeWidth="2" />
       </svg>
-      <div className="absolute inset-x-0 bottom-4 text-center">
-        <div className={`text-5xl font-black tracking-tight ${hasValue ? "text-white" : "text-slate-500"}`}>{display}</div>
-        <div className="mt-0 text-[11px] font-bold uppercase tracking-[0.14em] text-slate-300">{unit}</div>
+      <div className="absolute inset-x-0 bottom-3 text-center">
+        <div className={`text-[2.7rem] font-black leading-none tracking-tight ${hasValue ? "text-white" : "text-slate-500"}`}>{display}</div>
+        <div className="mt-0 text-[10px] font-bold uppercase tracking-[0.14em] text-slate-300">{unit}</div>
       </div>
-      <div className="absolute inset-x-0 top-[47%] text-center">
+      <div className="absolute inset-x-0 top-[55%] text-center">
         <div className="text-sm font-black uppercase tracking-[0.14em] text-cyan-200">{label}</div>
       </div>
     </div>

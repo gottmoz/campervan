@@ -69,10 +69,22 @@ const simulator = {
   startTcan485Discovery: () => ({ state: "Listening", discoveryRunning: true, port: 47887, beacon: null, fallbackUrls: ["http://camper-tcan485.local", "http://192.168.4.1"], readOnly: true }),
   stopTcan485Discovery: () => ({ state: "Stopped", discoveryRunning: false, port: 47887, beacon: null, readOnly: true }),
   getTcan485DiscoverySnapshot: () => ({ discoveryRunning: false, port: 47887, beacon: null, fallbackUrls: ["http://camper-tcan485.local", "http://192.168.4.1"], readOnly: true }),
+  getTcan485Settings: () => ({ enabled: true, networkMode: "sta_android_hotspot", baseUrl: "http://192.168.4.1", hostname: "camper-tcan485", readOnly: true }),
+  saveTcan485Settings: (json) => ({ ...json, readOnly: true }),
   testTcan485Health: async (baseUrl) => {
     const response = await fetch(`${baseUrl.replace(/\/$/, "")}/health`);
     return { baseUrl, health: await response.json(), readOnly: true };
   },
+  getTcan485GatewayStatus: async (baseUrl) => (await fetch(`${baseUrl.replace(/\/$/, "")}/api/gateway/status`)).json(),
+  getTcan485Rs485Status: async (baseUrl) => (await fetch(`${baseUrl.replace(/\/$/, "")}/api/rs485/status`)).json(),
+  getTcan485BmsLatest: async (baseUrl) => (await fetch(`${baseUrl.replace(/\/$/, "")}/api/bms/latest`)).json(),
+  getTcan485Rs485RawLatest: async (baseUrl) => (await fetch(`${baseUrl.replace(/\/$/, "")}/api/rs485/raw/latest?limit=50`)).json(),
+  getTcan485CanStatus: async (baseUrl) => (await fetch(`${baseUrl.replace(/\/$/, "")}/api/can/status`)).json(),
+  getTcan485CanFramesLatest: async (baseUrl) => (await fetch(`${baseUrl.replace(/\/$/, "")}/api/can/frames/latest?limit=100`)).json(),
+  saveTcan485WifiSettings: async (baseUrl, json) => (await fetch(`${baseUrl.replace(/\/$/, "")}/api/settings/wifi`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(json) })).json(),
+  saveTcan485CanSettings: async (baseUrl, json) => (await fetch(`${baseUrl.replace(/\/$/, "")}/api/settings/can`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(json) })).json(),
+  saveTcan485Rs485Settings: async (baseUrl, json) => (await fetch(`${baseUrl.replace(/\/$/, "")}/api/settings/rs485`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(json) })).json(),
+  rebootTcan485: async (baseUrl) => (await fetch(`${baseUrl.replace(/\/$/, "")}/api/reboot`, { method: "POST" })).json(),
   openAndroidHotspotSettings: () => ({ opened: false, target: "Android settings unavailable in desktop mode" }),
   saveRemoteLoggingSettings: (json) => {
     simulator.remoteUrl = json.serverUrl || simulator.remoteUrl;
@@ -110,10 +122,10 @@ const simulator = {
   getNmea2000Snapshot: () => ({ frames: [], readOnly: true }),
 };
 
-function nativeCall(method, ...args) {
+async function nativeCall(method, ...args) {
   const native = globalThis.window?.CamperAgent;
   if (!native || typeof native[method] !== "function") {
-    return { ok: true, data: simulator[method](...args) };
+    return { ok: true, data: await simulator[method](...args) };
   }
   try {
     const encodedArgs = args.map((arg) => (typeof arg === "string" ? arg : JSON.stringify(arg)));
@@ -164,7 +176,19 @@ export const camperAgentBridge = {
   startTcan485Discovery: () => call("startTcan485Discovery"),
   stopTcan485Discovery: () => call("stopTcan485Discovery"),
   getTcan485DiscoverySnapshot: () => call("getTcan485DiscoverySnapshot"),
+  getTcan485Settings: () => call("getTcan485Settings"),
+  saveTcan485Settings: (settings) => call("saveTcan485Settings", settings),
   testTcan485Health: (baseUrl) => call("testTcan485Health", baseUrl),
+  getTcan485GatewayStatus: (baseUrl) => call("getTcan485GatewayStatus", baseUrl),
+  getTcan485Rs485Status: (baseUrl) => call("getTcan485Rs485Status", baseUrl),
+  getTcan485BmsLatest: (baseUrl) => call("getTcan485BmsLatest", baseUrl),
+  getTcan485Rs485RawLatest: (baseUrl) => call("getTcan485Rs485RawLatest", baseUrl),
+  getTcan485CanStatus: (baseUrl) => call("getTcan485CanStatus", baseUrl),
+  getTcan485CanFramesLatest: (baseUrl) => call("getTcan485CanFramesLatest", baseUrl),
+  saveTcan485WifiSettings: (baseUrl, settings) => call("saveTcan485WifiSettings", baseUrl, settings),
+  saveTcan485CanSettings: (baseUrl, settings) => call("saveTcan485CanSettings", baseUrl, settings),
+  saveTcan485Rs485Settings: (baseUrl, settings) => call("saveTcan485Rs485Settings", baseUrl, settings),
+  rebootTcan485: (baseUrl) => call("rebootTcan485", baseUrl),
   openAndroidHotspotSettings: () => call("openAndroidHotspotSettings"),
   saveRemoteLoggingSettings: (settings) => call("saveRemoteLoggingSettings", settings),
   testRemoteLoggingServer: () => call("testRemoteLoggingServer"),

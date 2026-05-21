@@ -30,6 +30,8 @@ Phase 1 is read-only:
 - Upload speed: 921600
 - Monitor speed: 115200
 
+Verify CAN_TX/CAN_RX for your exact T-CAN485 board revision before connecting vehicle CAN.
+
 ## Install PlatformIO
 
 Use the VS Code PlatformIO extension, or:
@@ -119,6 +121,7 @@ The firmware does not log or return the Wi-Fi password.
 - `GET /api/can/frames/latest?limit=100`
 - `POST /api/can/tx` returns 403, disabled in phase 1
 - `GET /api/debug/logs/latest?limit=100`
+- `GET /api/debug/build`
 - `POST /api/settings/wifi`
 - `POST /api/settings/can`
 - `POST /api/settings/rs485`

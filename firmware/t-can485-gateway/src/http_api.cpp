@@ -67,6 +67,31 @@ static String gatewayStatusJson() {
   return out;
 }
 
+static String buildJson() {
+  JsonDocument doc;
+  doc["ok"] = true;
+  JsonObject data = doc["data"].to<JsonObject>();
+  data["firmware"] = FW_NAME;
+  data["version"] = FW_VERSION;
+  data["buildDate"] = __DATE__;
+  data["buildTime"] = __TIME__;
+  JsonObject pins = data["pins"].to<JsonObject>();
+  pins["CAN_TX"] = PIN_CAN_TX;
+  pins["CAN_RX"] = PIN_CAN_RX;
+  pins["RS485_TX"] = PIN_RS485_TX;
+  pins["RS485_RX"] = PIN_RS485_RX;
+  pins["RS485_EN"] = PIN_RS485_EN;
+  pins["RS485_CALLBACK"] = PIN_RS485_CALLBACK;
+  pins["WS2812"] = PIN_WS2812;
+  pins["ME2107_EN"] = PIN_ME2107_EN;
+  JsonObject safety = data["safety"].to<JsonObject>();
+  safety["CAN_TX_ENABLED_PHASE1"] = CAN_TX_ENABLED_PHASE1;
+  safety["BMS_WRITE_ENABLED_PHASE1"] = BMS_WRITE_ENABLED_PHASE1;
+  String out;
+  serializeJson(doc, out);
+  return out;
+}
+
 static void handleWifiSettings() {
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, server.arg("plain"));
@@ -126,6 +151,7 @@ void httpApiBegin() {
   server.on("/api/can/frames/latest", HTTP_GET, [] { logRequest(); sendJson(200, getCanFramesLatestJson(limitArg(100))); });
   server.on("/api/can/tx", HTTP_POST, [] { logRequest(); sendJson(403, "{\"ok\":false,\"error\":\"CAN TX disabled in phase 1\"}"); });
   server.on("/api/debug/logs/latest", HTTP_GET, [] { logRequest(); sendJson(200, getRecentLogsJson(limitArg(100))); });
+  server.on("/api/debug/build", HTTP_GET, [] { logRequest(); sendJson(200, buildJson()); });
   server.on("/api/settings/wifi", HTTP_POST, [] { logRequest(); handleWifiSettings(); });
   server.on("/api/settings/can", HTTP_POST, [] { logRequest(); handleCanSettings(); });
   server.on("/api/settings/rs485", HTTP_POST, [] { logRequest(); handleRs485Settings(); });

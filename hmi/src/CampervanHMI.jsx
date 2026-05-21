@@ -936,16 +936,23 @@ function ObdSettingsModal({ onClose }) {
 }
 
 function IntegrationsHealthModal({ onClose }) {
-  const [exported, setExported] = useState(false);
+  const [diagnosticsResult, setDiagnosticsResult] = useState(null);
   async function exportDiagnostics() {
-    console.log("integration diagnostics", await camperAgentBridge.exportIntegrationDiagnostics());
-    setExported(true);
+    const exported = await camperAgentBridge.exportIntegrationDiagnostics();
+    let upload = null;
+    if (exported.ok) upload = await camperAgentBridge.uploadDiagnosticsNow();
+    setDiagnosticsResult({ exported, upload });
   }
+  const diagnosticsPath = diagnosticsResult?.exported?.data?.path || "--";
+  const uploadText = diagnosticsResult?.upload ? (diagnosticsResult.upload.ok ? "remote upload OK" : diagnosticsResult.upload.error || "remote upload failed") : "--";
   return (
     <ModalShell title="Integrations Health" subtitle="Adapters, permissions, last update, logs" icon={Wrench} onClose={onClose}>
       <div className="grid h-full grid-rows-[1fr_auto] gap-4">
         <div className="grid grid-cols-5 gap-3">{["Battery BMS", "Victron", "Garmin/NMEA", "Ford OBD", "USB subsystem"].map((card) => <div key={card} className="rounded-3xl border border-white/10 bg-white/[0.045] p-3"><div className="text-base font-black text-white">{card}</div>{["status: Offline", "last packet: none", "stale age: n/a", "errors: 0", "source: simulator", "read-only: on"].map((line) => <div key={line} className="mt-3 text-xs text-slate-300">{line}</div>)}</div>)}</div>
-        <button onClick={exportDiagnostics} className="rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-black text-slate-950">{exported ? "Diagnostics exported to console" : "Export diagnostics JSON"}</button>
+        <div className="grid grid-cols-[auto_1fr] gap-3">
+          <button onClick={exportDiagnostics} className="rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-black text-slate-950">Export diagnostics JSON</button>
+          <div className="rounded-2xl border border-white/10 bg-black/20 p-3 text-xs text-slate-300">File: <span className="text-white">{diagnosticsPath}</span><br />Upload: <span className="text-white">{uploadText}</span></div>
+        </div>
       </div>
     </ModalShell>
   );
@@ -1061,7 +1068,18 @@ function Tcan485GatewayModal({ onClose }) {
   const [manualUrl, setManualUrl] = useState("http://camper-tcan485.local");
   const [status, setStatus] = useState("Idle");
   const [beacon, setBeacon] = useState(null);
+  const [gatewayStatus, setGatewayStatus] = useState(null);
+  const [rs485Status, setRs485Status] = useState(null);
+  const [bmsLatest, setBmsLatest] = useState(null);
+  const [rs485Raw, setRs485Raw] = useState(null);
+  const [canStatus, setCanStatus] = useState(null);
+  const [canFrames, setCanFrames] = useState(null);
   const discoveredUrl = beacon?.baseUrl || (beacon?.ip ? `http://${beacon.ip}` : "");
+  const baseUrl = discoveredUrl || manualUrl || "http://192.168.4.1";
+  const modeMap = { "Van Router": "sta_router", "Android Hotspot": "sta_android_hotspot", "LilyGO Setup AP": "setup_ap" };
+  const unwrap = (result) => result?.data?.data || result?.data || {};
+  const setResult = (result, okText) => setStatus(result.ok ? okText : result.error || "Request failed");
+  const rs485ProtocolLabel = (value) => value === "AutoDetect" ? "Passive listen / AutoDetect future" : value || "--";
   async function startDiscovery() {
     const result = await camperAgentBridge.startTcan485Discovery();
     setStatus(result.ok ? "Listening on UDP 47887" : "Error");
@@ -1073,14 +1091,52 @@ function Tcan485GatewayModal({ onClose }) {
     if (result.data?.beacon && typeof result.data.beacon === "object") setBeacon(result.data.beacon);
   }
   async function testConnection() {
-    const baseUrl = discoveredUrl || manualUrl || "http://192.168.4.1";
     const result = await camperAgentBridge.testTcan485Health(baseUrl);
     setStatus(result.ok ? `Health OK: ${baseUrl}` : result.error || "Health check failed");
+  }
+  async function saveWifiToLilyGo() {
+    const result = await camperAgentBridge.saveTcan485WifiSettings(baseUrl, { wifiMode: modeMap[networkMode] || "sta_android_hotspot", ssid, password, hostname: "camper-tcan485", fallbackApEnabled: true });
+    await camperAgentBridge.saveTcan485Settings({ networkMode: modeMap[networkMode] || "sta_android_hotspot", baseUrl, hostname: "camper-tcan485", readOnly: true });
+    setResult(result, "Wi-Fi saved to LilyGO");
+  }
+  async function refreshGatewayStatus() {
+    const result = await camperAgentBridge.getTcan485GatewayStatus(baseUrl);
+    if (result.ok) setGatewayStatus(unwrap(result));
+    setResult(result, "Gateway status refreshed");
+  }
+  async function refreshRs485Status() {
+    const result = await camperAgentBridge.getTcan485Rs485Status(baseUrl);
+    if (result.ok) setRs485Status(unwrap(result));
+    setResult(result, "RS485 status refreshed");
+  }
+  async function fetchBmsLatest() {
+    const result = await camperAgentBridge.getTcan485BmsLatest(baseUrl);
+    if (result.ok) setBmsLatest(unwrap(result));
+    setResult(result, "BMS latest fetched");
+  }
+  async function fetchRs485Raw() {
+    const result = await camperAgentBridge.getTcan485Rs485RawLatest(baseUrl);
+    if (result.ok) setRs485Raw(unwrap(result));
+    setResult(result, "RS485 raw fetched");
+  }
+  async function refreshCanStatus() {
+    const result = await camperAgentBridge.getTcan485CanStatus(baseUrl);
+    if (result.ok) setCanStatus(unwrap(result));
+    setResult(result, "CAN status refreshed");
+  }
+  async function fetchCanFrames() {
+    const result = await camperAgentBridge.getTcan485CanFramesLatest(baseUrl);
+    if (result.ok) setCanFrames(unwrap(result));
+    setResult(result, "CAN frames fetched");
+  }
+  async function rebootLilyGo() {
+    const result = await camperAgentBridge.rebootTcan485(baseUrl);
+    setResult(result, "LilyGO reboot requested");
   }
   return (
     <ModalShell title="T-CAN485 Gateway" subtitle="Android hotspot, UDP discovery, RS485 BMS gateway" icon={Wifi} onClose={onClose}>
       <div className="grid h-full grid-cols-[330px_1fr] gap-4">
-        <div className="space-y-3">
+        <div className="space-y-2">
           <SettingField label="Network mode"><select value={networkMode} onChange={(e) => setNetworkMode(e.target.value)} className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option>Van Router</option><option>Android Hotspot</option><option>LilyGO Setup AP</option></select></SettingField>
           <SettingField label="Hotspot SSID"><input value={ssid} onChange={(e) => setSsid(e.target.value)} placeholder="Android hotspot SSID" className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white outline-none" /></SettingField>
           <SettingField label="Hotspot password"><input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="Not logged or uploaded" className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white outline-none" /></SettingField>
@@ -1091,6 +1147,16 @@ function Tcan485GatewayModal({ onClose }) {
             <button onClick={startDiscovery} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Start discovery</button>
             <button onClick={() => camperAgentBridge.stopTcan485Discovery().then(() => setStatus("Stopped"))} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Stop discovery</button>
           </div>
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick={saveWifiToLilyGo} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Save Wi-Fi to LilyGO</button>
+            <button onClick={refreshGatewayStatus} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Refresh gateway status</button>
+            <button onClick={refreshRs485Status} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Refresh RS485 status</button>
+            <button onClick={fetchBmsLatest} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Fetch BMS latest</button>
+            <button onClick={fetchRs485Raw} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Fetch RS485 raw</button>
+            <button onClick={refreshCanStatus} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Refresh CAN status</button>
+            <button onClick={fetchCanFrames} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Fetch CAN frames</button>
+            <button onClick={rebootLilyGo} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Reboot LilyGO</button>
+          </div>
           <button onClick={refreshDiscovery} className="w-full rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Refresh discovery</button>
           <div className="rounded-2xl border border-white/10 bg-black/20 p-3 text-xs text-slate-200">{status}</div>
         </div>
@@ -1098,23 +1164,24 @@ function Tcan485GatewayModal({ onClose }) {
           <div className="grid grid-cols-3 gap-3">
             {[["Android Hotspot Mode", "Use this if the head unit has SIM/4G/USB/Ethernet internet. LilyGO joins Android's hotspot and the app keeps internet."], ["Van Router Mode", "Best mode. Android and LilyGO join the same router."], ["Setup AP Mode", "Only for first setup. Android may lose internet while connected directly to LilyGO."]].map(([title, text]) => <div key={title} className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="text-sm font-black text-white">{title}</div><div className="mt-3 text-xs text-slate-300">{text}</div></div>)}
           </div>
-          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4">
-            <div className="mb-3 flex items-center justify-between"><span className="font-black text-white">Discovery</span><StatusBadge value={beacon ? "Candidate found" : "Waiting"} /></div>
-            <div className="rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-xs text-amber-100">Android hotspot keeps internet only if Android has non-Wi-Fi upstream internet. Enable hotspot manually, then press Discover LilyGO.</div>
-            <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-slate-300">
-              <div className="rounded-xl bg-black/20 p-3">Discovered IP: <span className="font-black text-white">{beacon?.ip || "--"}</span></div>
-              <div className="rounded-xl bg-black/20 p-3">Candidate: <span className="font-black text-white">{discoveredUrl || "--"}</span></div>
-              <div className="rounded-xl bg-black/20 p-3">Hostname: <span className="font-black text-white">{beacon?.hostname || "camper-tcan485"}</span></div>
-              <div className="rounded-xl bg-black/20 p-3">Profile: <span className="font-black text-white">{beacon?.profile || "battery_bms"}</span></div>
+          <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.045] p-4">
+            <div className="mb-3 flex items-center justify-between"><span className="font-black text-white">Live gateway data</span><StatusBadge value={beacon ? "Candidate found" : "Waiting"} /></div>
+            <div className="grid max-h-[335px] grid-cols-2 gap-3 overflow-y-auto pr-1 text-xs text-slate-300">
+              <div className="rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-amber-100">Android hotspot keeps internet only if Android has non-Wi-Fi upstream internet. Enable hotspot manually, then press Discover LilyGO.</div>
+              <div className="rounded-2xl bg-black/25 p-3">Base URL: <span className="font-black text-white">{baseUrl}</span><br />Discovered IP: <span className="font-black text-white">{beacon?.ip || "--"}</span><br />Hostname: <span className="font-black text-white">{beacon?.hostname || "camper-tcan485"}</span></div>
+              <div className="rounded-2xl bg-black/25 p-3">Wi-Fi<br />mode: <span className="font-black text-white">{gatewayStatus?.wifi?.mode || "--"}</span><br />ip: <span className="font-black text-white">{gatewayStatus?.wifi?.ip || "--"}</span><br />rssi: <span className="font-black text-white">{gatewayStatus?.wifi?.rssi ?? "--"}</span></div>
+              <div className="rounded-2xl bg-black/25 p-3">RS485<br />enabled: <span className="font-black text-white">{String((rs485Status || gatewayStatus?.rs485)?.enabled ?? "--")}</span><br />online: <span className="font-black text-white">{String((rs485Status || gatewayStatus?.rs485)?.online ?? "--")}</span><br />baud: <span className="font-black text-white">{(rs485Status || gatewayStatus?.rs485)?.baud || "--"}</span><br />protocol: <span className="font-black text-white">{rs485ProtocolLabel((rs485Status || gatewayStatus?.rs485)?.protocol)}</span><br />framesRx: <span className="font-black text-white">{(rs485Status || gatewayStatus?.rs485)?.framesRx ?? "--"}</span><br />lastRxMs: <span className="font-black text-white">{(rs485Status || gatewayStatus?.rs485)?.lastRxMs ?? "--"}</span></div>
+              <div className="rounded-2xl bg-black/25 p-3">CAN<br />enabled: <span className="font-black text-white">{String((canStatus || gatewayStatus?.can)?.enabled ?? "--")}</span><br />running: <span className="font-black text-white">{String((canStatus || gatewayStatus?.can)?.running ?? "--")}</span><br />profile: <span className="font-black text-white">{(canStatus || gatewayStatus?.can)?.profile || "--"}</span><br />bitrate: <span className="font-black text-white">{(canStatus || gatewayStatus?.can)?.bitrate || "--"}</span><br />listenOnly: <span className="font-black text-white">{String((canStatus || gatewayStatus?.can)?.listenOnly ?? "--")}</span><br />framesRx: <span className="font-black text-white">{(canStatus || gatewayStatus?.can)?.framesRx ?? "--"}</span><br />busErrors: <span className="font-black text-white">{(canStatus || gatewayStatus?.can)?.busErrors ?? "--"}</span></div>
+              <div className="rounded-2xl bg-black/25 p-3"><div className="mb-1 font-black text-white">BMS latest JSON</div><pre className="max-h-28 overflow-auto whitespace-pre-wrap font-mono text-[10px]">{JSON.stringify(bmsLatest || { valid: false, values: null }, null, 2)}</pre></div>
+              <div className="rounded-2xl bg-black/25 p-3"><div className="mb-1 font-black text-white">Latest RS485 raw</div><pre className="max-h-28 overflow-auto whitespace-pre-wrap font-mono text-[10px]">{JSON.stringify(rs485Raw || { frames: [] }, null, 2)}</pre></div>
+              <div className="rounded-2xl bg-black/25 p-3"><div className="mb-1 font-black text-white">Latest CAN frames</div><pre className="max-h-28 overflow-auto whitespace-pre-wrap font-mono text-[10px]">{JSON.stringify(canFrames || { frames: [] }, null, 2)}</pre></div>
             </div>
-            <div className="mt-4 rounded-2xl bg-black/25 p-3 font-mono text-[11px] text-slate-300">Fallback URLs: http://camper-tcan485.local, http://192.168.4.1, discovered UDP IP</div>
           </div>
         </div>
       </div>
     </ModalShell>
   );
 }
-
 function BatteryBmsSettingsModal({ onClose }) {
   const [tab, setTab] = useState("Overview");
   const [canStatus, setCanStatus] = useState("Passive listen ready");
@@ -1196,22 +1263,16 @@ function SystemsView({ state, setters, openIntegrationSettings }) {
         <div className="max-h-[390px] space-y-2 overflow-y-auto pr-1">
           {[
             ["Ford OBD / vLinker", "USB vLinker, ISO15765-4 CAN11/500, PIDs, DTC read-only", "obd"],
-            ["CAN Bus Scanner", "Ford OBD, NMEA 2000, BMS-CAN profiles", "canbus"],
-            ["Remote Logging / Cloudflare", "Live logs, diagnostics upload, tunnel status", "remoteLogging"],
-            ["Battery / BMS", "12V 320Ah LiFePO4, 250A BMS, Bluetooth + CAN", "battery"],
             ["T-CAN485 Gateway", "Android hotspot, UDP discovery, RS485 BMS gateway", "tcan485"],
-            ["Power Integrations", "SmartSolar, Renogy 40A, Orion-Tr, shore charging"],
+            ["Battery / BMS", "12V 320Ah LiFePO4, 250A BMS, Bluetooth + CAN", "battery"],
             ["Victron System", "SmartSolar MPPT 100/20 and Orion-Tr 12/12V 18A", "victron"],
             ["Renogy DC/DC", "40A alternator battery charger"],
-            ["Network", "Wi‑Fi, Bluetooth, hotspot, MQTT broker"],
-            ["Sensors", "Tank calibration, temperature offsets, CO₂"],
-            ["Power limits", "Battery chemistry, inverter, charger profiles"],
-            ["Automation", "Rules, timers, scenes, geofence actions"],
-            ["Service", "Logs, firmware, backup, factory reset"],
-            ["Victron", "GX, Venus OS, VE.Direct, Modbus/MQTT telemetry", "victron"],
             ["Garmin / NMEA", "NMEA 2000, EmpirBus discovery, Garmin network data", "garmin"],
-            ["Ford OBD", "USB OBD dongle, ELM327/STN, Transit EcoBlue read-only", "obd"],
-            ["Integrations Health", "Adapters, permissions, last update, logs", "health"],
+            ["CAN Bus Scanner", "Ford OBD, NMEA 2000, BMS-CAN profiles", "canbus"],
+            ["Remote Logging / Cloudflare", "Live logs, diagnostics upload, tunnel status", "remoteLogging"],
+            ["Integration Health", "Adapters, permissions, last update, logs", "health"],
+            ["Network", "Wi-Fi, Bluetooth, hotspot, MQTT broker"],
+            ["Service", "Logs, firmware, backup, factory reset"],
           ].map(([title, sub, modal]) => (
             <button key={title} onClick={() => modal && openIntegrationSettings(modal)} className="flex w-full items-center justify-between rounded-2xl border border-white/10 bg-white/[0.055] px-4 py-3 text-left hover:bg-white/[0.09]">
               <div>

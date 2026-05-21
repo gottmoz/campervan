@@ -8,6 +8,6 @@ object FordTransitEcoBlue2016Profile {
     const val slowPollMs = 2_000L
     const val diagnosticPoll = "manual DTC request only"
     val standardPids = listOf("0C", "0D", "05", "0F", "10", "11", "42", "46", "61", "62", "63")
-    val autoBaudOrder = listOf(38400, 115200, 9600, 57600, 230400, 500000, 1000000, 2000000)
+    val autoBaudOrder = listOf(115200, 38400, 9600, 57600, 230400, 460800, 921600)
     val initSequence = listOf("ATZ", "ATE0", "ATL0", "ATS0", "ATH1", "ATAL", "ATST96", "ATSP6", "ATDP", "ATDPN")
 }

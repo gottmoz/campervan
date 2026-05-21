@@ -51,6 +51,8 @@ class UsbSerialManager(private val context: Context) {
     private val prober = UsbSerialProber(customProbeTable())
     private var port: UsbSerialPort? = null
     private var pendingOpenBaudRate: Int = 115200
+    private var lastPermissionRequestKey: String? = null
+    private var lastPermissionRequestAtMs: Long = 0L
     private val _status = MutableStateFlow(UsbSerialDeviceStatus())
     val status: StateFlow<UsbSerialDeviceStatus> = _status
 
@@ -60,6 +62,10 @@ class UsbSerialManager(private val context: Context) {
                 ACTION_USB_PERMISSION -> {
                     val device = intent.getParcelableExtra<UsbDevice>(UsbManager.EXTRA_DEVICE)
                     val granted = intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)
+                    Log.i(
+                        TAG,
+                        "USB permission broadcast received granted=$granted vid=${device?.vendorId} pid=${device?.productId} hasPermission=${device?.let { usbManager.hasPermission(it) }}"
+                    )
                     if (granted && device != null) {
                         Log.i(TAG, "USB permission granted")
                         _status.value = _status.value.copy(permissionGranted = true, state = UsbSerialConnectionState.PermissionGranted, error = null)
@@ -87,6 +93,7 @@ class UsbSerialManager(private val context: Context) {
             @Suppress("DEPRECATION")
             appContext.registerReceiver(receiver, filter)
         }
+        Log.i(TAG, "USB permission receiver registered")
         enumerate()
     }
 
@@ -98,6 +105,15 @@ class UsbSerialManager(private val context: Context) {
         }
         val statuses = drivers.map { driver ->
             val device = driver.device
+            Log.i(
+                TAG,
+                "USB serial candidates: vid=0x%04X pid=0x%04X driver=%s permission=%s".format(
+                    device.vendorId,
+                    device.productId,
+                    driver.javaClass.simpleName,
+                    usbManager.hasPermission(device)
+                )
+            )
             UsbSerialDeviceStatus(
                 deviceName = device.deviceName,
                 driver = driver.javaClass.simpleName,
@@ -115,14 +131,51 @@ class UsbSerialManager(private val context: Context) {
     fun enumerateJson(): JSONArray = JSONArray(enumerate().map { it.toJson() })
 
     fun requestPermissionFirst(kind: String = "usb") {
+        ensurePermissionFirst(kind)
+    }
+
+    fun currentPermissionStatus(): UsbSerialDeviceStatus {
+        val current = _status.value
+        if (current.state == UsbSerialConnectionState.PermissionRequested && System.currentTimeMillis() - lastPermissionRequestAtMs > PERMISSION_TIMEOUT_MS) {
+            _status.value = current.copy(
+                state = UsbSerialConnectionState.PermissionRequired,
+                error = "No Android permission response. Unplug/replug vLinker or press Rescan USB."
+            )
+        }
+        return _status.value
+    }
+
+    fun ensurePermissionFirst(kind: String = "usb"): UsbSerialDeviceStatus {
         val driver = drivers().firstOrNull() ?: run {
             _status.value = UsbSerialDeviceStatus(state = UsbSerialConnectionState.NoDevice, error = "No USB serial driver found")
-            return
+            return _status.value
         }
-        requestPermission(driver.device, kind)
+        val device = driver.device
+        if (usbManager.hasPermission(device)) {
+            _status.value = statusFor(driver, UsbSerialConnectionState.PermissionGranted).copy(permissionGranted = true)
+            return _status.value
+        }
+        requestPermission(device, kind)
+        return _status.value
     }
 
     fun requestPermission(device: UsbDevice, kind: String = "usb") {
+        val now = System.currentTimeMillis()
+        val key = "${device.vendorId}:${device.productId}:${device.deviceName}"
+        if (lastPermissionRequestKey == key && now - lastPermissionRequestAtMs < PERMISSION_DEBOUNCE_MS) {
+            Log.i(TAG, "Permission request already pending for vid=${device.vendorId} pid=${device.productId}")
+            _status.value = UsbSerialDeviceStatus(
+                deviceName = device.deviceName,
+                vendorId = device.vendorId,
+                productId = device.productId,
+                permissionGranted = false,
+                state = UsbSerialConnectionState.PermissionRequested,
+                error = "Permission request already pending"
+            )
+            return
+        }
+        lastPermissionRequestKey = key
+        lastPermissionRequestAtMs = now
         Log.i(TAG, "Requesting USB permission for vid=${device.vendorId} pid=${device.productId} kind=$kind")
         _status.value = UsbSerialDeviceStatus(
             deviceName = device.deviceName,
@@ -138,6 +191,7 @@ class UsbSerialManager(private val context: Context) {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         usbManager.requestPermission(device, intent)
+        Log.i(TAG, "USB permission request sent")
     }
 
     fun openFirst(baudRate: Int = 115200): UsbSerialDeviceStatus {
@@ -146,7 +200,6 @@ class UsbSerialManager(private val context: Context) {
         val device = driver.device
         if (!usbManager.hasPermission(device)) {
             _status.value = statusFor(driver, UsbSerialConnectionState.PermissionRequired)
-            requestPermission(device, "open")
             return _status.value
         }
         _status.value = statusFor(driver, UsbSerialConnectionState.Opening)
@@ -167,6 +220,13 @@ class UsbSerialManager(private val context: Context) {
         runCatching { port?.close() }
         port = null
         _status.value = _status.value.copy(open = false, state = UsbSerialConnectionState.DeviceFound)
+    }
+
+    fun drainInput(durationMs: Long = 300L) {
+        val deadline = System.currentTimeMillis() + durationMs
+        while (System.currentTimeMillis() < deadline && port?.isOpen == true) {
+            runCatching { readBytes(50) }
+        }
     }
 
     fun dispose() {
@@ -233,9 +293,15 @@ class UsbSerialManager(private val context: Context) {
     companion object {
         private const val TAG = "UsbSerialManager"
         private const val ACTION_USB_PERMISSION = "se.gottmoz.camperagent.USB_PERMISSION"
+        private const val PERMISSION_DEBOUNCE_MS = 5_000L
+        private const val PERMISSION_TIMEOUT_MS = 15_000L
 
         private fun customProbeTable(): ProbeTable = ProbeTable().apply {
             addProduct(0x0403, 0x6001, FtdiSerialDriver::class.java)
+            addProduct(0x0403, 0x6010, FtdiSerialDriver::class.java)
+            addProduct(0x0403, 0x6011, FtdiSerialDriver::class.java)
+            addProduct(0x0403, 0x6014, FtdiSerialDriver::class.java)
+            addProduct(0x0403, 0x6015, FtdiSerialDriver::class.java)
             addProduct(0x1A86, 0x7523, Ch34xSerialDriver::class.java)
             addProduct(0x1A86, 0x5523, Ch34xSerialDriver::class.java)
             addProduct(0x10C4, 0xEA60, Cp21xxSerialDriver::class.java)

@@ -844,12 +844,32 @@ function GarminSettingsModal({ onClose }) {
 function ObdSettingsModal({ onClose }) {
   const [status, setStatus] = useState("PermissionRequired");
   const [lastError, setLastError] = useState("");
+  const [lastMessage, setLastMessage] = useState("");
+  const [usbStatus, setUsbStatus] = useState({});
+  const [rawLog, setRawLog] = useState([]);
+  const [lastTx, setLastTx] = useState("");
+  const [lastRx, setLastRx] = useState("");
   const [baudRate, setBaudRate] = useState("Auto");
   const [protocol, setProtocol] = useState("ISO15765-4 CAN 11/500");
   const [rawCommand, setRawCommand] = useState("ATI");
   const [expertMode, setExpertMode] = useState(false);
-  const baudRates = ["Auto", "9600", "19200", "38400", "57600", "115200", "230400", "250000", "460800", "500000", "921600", "1000000", "2000000"];
+  const [permissionLockedUntil, setPermissionLockedUntil] = useState(0);
+  const baudRates = ["Auto", "9600", "19200", "38400", "57600", "115200", "230400", "460800", "921600", "500000", "1000000", "2000000"];
   const protocols = ["Auto", "ISO15765-4 CAN 11/500", "ISO15765-4 CAN 29/500", "ISO15765-4 CAN 11/250", "ISO15765-4 CAN 29/250", "SAE J1939 CAN 29/250", "SAE J1939 CAN 29/500", "ISO9141-2", "ISO14230-4 KWP", "Custom"];
+  const safeRawCommands = ["ATI", "ATDP", "ATDPN", "0100", "010C", "010D"];
+  const permissionBusy = Date.now() < permissionLockedUntil && status === "PermissionRequested";
+  const permissionLabel = status === "NoDevice" || status === "NoDeviceFound" ? "Scan USB" : status === "PermissionRequested" ? "Waiting for Android popup..." : status === "PermissionGranted" ? "Permission already granted" : status === "Open" ? "Serial open" : "Request permission";
+  function applyResult(result) {
+    const data = result?.data || {};
+    const nextStatus = data.state || data.status?.state || data.status || (result?.ok ? "Device found" : "Error");
+    setStatus(nextStatus);
+    setUsbStatus(data.status || data.usbStatus || data);
+    setLastMessage(data.message || "");
+    setLastError(result?.ok ? data.lastError || "" : result?.error || "Unknown error");
+    setLastTx(data.lastTx || "");
+    setLastRx(data.lastRx || "");
+    if (Array.isArray(data.rawLog)) setRawLog(data.rawLog.slice(-60));
+  }
   async function bridgeAction(action) {
     const settings = { baudRate, protocol, adapterType: "VLinkerUsb", readOnly: true };
     const calls = {
@@ -858,14 +878,13 @@ function ObdSettingsModal({ onClose }) {
       connect: () => camperAgentBridge.connectObd(settings),
       disconnect: () => camperAgentBridge.disconnectObd(),
     };
+    if (action === "permission") setPermissionLockedUntil(Date.now() + 5000);
     const result = await calls[action]();
-    setStatus(result.ok ? result.data.state || result.data.status?.state || "Device found" : "Error");
-    setLastError(result.ok ? "" : result.error || "Unknown error");
+    applyResult(result);
   }
   async function sendRaw() {
     const result = await camperAgentBridge.sendReadOnlyObdCommand(rawCommand);
-    setStatus(result.ok ? `Queued ${rawCommand}` : "Error");
-    setLastError(result.ok ? "" : result.error || "Blocked unsafe command");
+    applyResult(result.ok ? { ...result, data: { ...result.data, state: `Sent ${rawCommand}` } } : result);
   }
   const pids = ["RPM PID 0C", "Speed PID 0D", "Coolant temp PID 05", "Intake temp PID 0F", "MAF PID 10", "Throttle PID 11", "Ambient temp PID 46", "Driver demand torque PID 61", "Actual engine torque PID 62", "Engine reference torque PID 63"];
   return (
@@ -873,20 +892,22 @@ function ObdSettingsModal({ onClose }) {
       <div className="grid h-full grid-cols-[330px_1fr] gap-4">
         <div className="space-y-2">
           <SettingField label="USB dongle"><select className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option>Auto detect</option><option>ELM327 compatible USB</option><option>OBDLink/STN compatible USB</option><option>vLinker USB</option></select></SettingField>
-          <SettingField label="Serial baud"><select value={baudRate} onChange={(e) => setBaudRate(e.target.value)} className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white">{baudRates.map((rate) => <option key={rate}>{rate}</option>)}</select></SettingField>
+          <SettingField label="USB serial baud"><select value={baudRate} onChange={(e) => setBaudRate(e.target.value)} className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white">{baudRates.map((rate) => <option key={rate}>{rate}</option>)}</select></SettingField>
           <SettingField label="OBD protocol"><select value={protocol} onChange={(e) => setProtocol(e.target.value)} className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white">{protocols.map((item) => <option key={item}>{item}</option>)}</select></SettingField>
+          <div className="rounded-2xl border border-cyan-200/15 bg-cyan-300/10 p-3 text-[11px] font-bold text-cyan-100">CAN 500k is selected by ATSP6. USB baud is separate.</div>
           <div className="grid grid-cols-2 gap-2">
-            <button onClick={() => bridgeAction("scan")} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Scan USB</button>
-            <button onClick={() => bridgeAction("permission")} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Request Permission</button>
+            <button onClick={() => bridgeAction("scan")} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Rescan USB</button>
+            <button disabled={permissionBusy} onClick={() => bridgeAction(status === "NoDevice" || status === "NoDeviceFound" ? "scan" : "permission")} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white disabled:opacity-50">{permissionLabel}</button>
             <button onClick={() => bridgeAction("connect")} className="rounded-2xl bg-cyan-300 px-3 py-2 text-xs font-black text-slate-950">Connect</button>
             <button onClick={() => bridgeAction("disconnect")} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Disconnect</button>
           </div>
           <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.045] p-3"><ReadOnlyBadge /><StatusBadge value={status} /></div>
+          {lastMessage && <div className="rounded-2xl border border-white/10 bg-black/20 p-3 text-xs text-slate-200">{lastMessage}</div>}
           {lastError && <div className="rounded-2xl border border-rose-200/20 bg-rose-300/10 p-3 text-xs text-rose-100">{lastError}</div>}
         </div>
         <div className="grid grid-cols-2 gap-4">
-          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-2 text-sm font-black text-white">Init sequence preview</div>{["ATZ", "ATE0", "ATL0", "ATS0", "ATH1", "ATAL", "ATST96", "ATSP6", "ATDP", "ATDPN"].map((cmd) => <div key={cmd} className="mb-1 rounded-xl bg-black/30 px-3 py-1 font-mono text-xs text-cyan-100">{cmd}</div>)}<div className="mt-3 rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-xs text-amber-100">Read DTCs only. Clear DTC disabled in read-only mode.</div></div>
-          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-2 text-sm font-black text-white">Live read-only PIDs</div><div className="grid grid-cols-1 gap-1">{pids.map((pid) => <div key={pid} className="rounded-xl bg-white/[0.055] px-3 py-1.5 text-xs text-slate-200">{pid}</div>)}</div><div className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-3"><div className="mb-2 text-xs font-black text-white">Advanced / Raw OBD</div><label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={expertMode} onChange={(e) => setExpertMode(e.target.checked)} /> Expert mode</label><div className="mt-2 flex gap-2"><input disabled={!expertMode} value={rawCommand} onChange={(e) => setRawCommand(e.target.value)} className="min-w-0 flex-1 rounded-xl bg-slate-900 px-3 py-2 text-xs text-white" /><button disabled={!expertMode} onClick={sendRaw} className="rounded-xl bg-cyan-300 px-3 py-2 text-xs font-black text-slate-950 disabled:opacity-40">Send</button></div><div className="mt-2 text-[11px] text-amber-100">Do not send write/control commands. Read-only diagnostics only.</div></div></div>
+          <div className="space-y-3 rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="text-sm font-black text-white">Raw OBD status</div><div className="grid grid-cols-2 gap-2 text-[11px] text-slate-300">{[["USB VID/PID", `${usbStatus.vendorId ?? "--"} / ${usbStatus.productId ?? "--"}`], ["Driver", usbStatus.driver || "--"], ["Permission", String(usbStatus.permissionGranted ?? "--")], ["Serial open", String(usbStatus.open ?? "--")], ["USB baud", baudRate], ["Protocol", `${protocol} / ATSP6`], ["Last TX", lastTx || "--"], ["Last RX", lastRx || "--"]].map(([k, v]) => <div key={k} className="rounded-xl bg-black/25 px-3 py-2"><div className="font-black uppercase tracking-[0.12em] text-slate-500">{k}</div><div className="truncate text-slate-100">{v}</div></div>)}</div><div className="grid grid-cols-3 gap-2">{safeRawCommands.map((cmd) => <button key={cmd} onClick={() => { setRawCommand(cmd); camperAgentBridge.sendReadOnlyObdCommand(cmd).then(applyResult); }} className="rounded-xl bg-white/[0.07] px-2 py-2 text-xs font-black text-white">{cmd}</button>)}<button onClick={() => setRawLog([])} className="rounded-xl bg-white/[0.07] px-2 py-2 text-xs font-black text-white">Clear log</button></div><div className="rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-xs text-amber-100">Read DTCs only. Clear DTC disabled in read-only mode.</div></div>
+          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-2 text-sm font-black text-white">Live read-only PIDs</div><div className="grid grid-cols-1 gap-1">{pids.slice(0, 7).map((pid) => <div key={pid} className="rounded-xl bg-white/[0.055] px-3 py-1.5 text-xs text-slate-200">{pid}</div>)}</div><div className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-3"><div className="mb-2 text-xs font-black text-white">Advanced / Raw OBD</div><label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={expertMode} onChange={(e) => setExpertMode(e.target.checked)} /> Expert mode</label><div className="mt-2 flex gap-2"><input disabled={!expertMode} value={rawCommand} onChange={(e) => setRawCommand(e.target.value)} className="min-w-0 flex-1 rounded-xl bg-slate-900 px-3 py-2 text-xs text-white" /><button disabled={!expertMode} onClick={sendRaw} className="rounded-xl bg-cyan-300 px-3 py-2 text-xs font-black text-slate-950 disabled:opacity-40">Send</button></div><div className="mt-2 text-[11px] text-amber-100">Do not send write/control commands. Read-only diagnostics only.</div></div><div className="mt-3 max-h-24 overflow-auto rounded-2xl bg-black/25 p-2 font-mono text-[10px] text-slate-300">{rawLog.length ? rawLog.map((row, idx) => <div key={`${row.timestamp}-${idx}`}>{row.direction} {row.command || ""} {row.response || row.error || row.state || ""}</div>) : "No raw OBD log yet"}</div></div>
         </div>
       </div>
     </ModalShell>

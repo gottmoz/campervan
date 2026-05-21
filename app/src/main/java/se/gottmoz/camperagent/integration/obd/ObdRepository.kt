@@ -14,7 +14,14 @@ class ObdRepository {
     val telemetry: StateFlow<ObdTelemetry> = _telemetry
     private val rawLog = ArrayDeque<JSONObject>()
 
-    fun addLog(direction: String, command: String? = null, response: String? = null, state: String? = null) {
+    fun addLog(
+        direction: String,
+        command: String? = null,
+        response: String? = null,
+        state: String? = null,
+        elapsedMs: Long? = null,
+        error: String? = null
+    ) {
         if (rawLog.size >= 200) rawLog.removeFirst()
         rawLog.addLast(
             JSONObject()
@@ -23,6 +30,8 @@ class ObdRepository {
                 .put("command", command ?: JSONObject.NULL)
                 .put("response", response ?: JSONObject.NULL)
                 .put("state", state ?: JSONObject.NULL)
+                .put("elapsedMs", elapsedMs ?: JSONObject.NULL)
+                .put("error", error ?: JSONObject.NULL)
         )
     }
 

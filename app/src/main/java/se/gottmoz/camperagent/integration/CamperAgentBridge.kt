@@ -88,11 +88,12 @@ class CamperAgentBridge(context: Context) {
     }
 
     @JavascriptInterface fun scanUsbSerialDevices(): String = ok(JSONObject().put("devices", usbSerialManager.enumerateJson()).put("status", usbSerialManager.statusJson()))
-    @JavascriptInterface fun getUsbPermissionStatus(): String = ok(usbSerialManager.statusJson())
+    @JavascriptInterface fun getUsbPermissionStatus(): String = ok(usbSerialManager.currentPermissionStatus().let { usbSerialManager.statusJson() })
     @JavascriptInterface fun requestUsbPermission(kind: String): String = handle {
-        usbSerialManager.requestPermissionFirst(kind)
+        val permissionStatus = usbSerialManager.ensurePermissionFirst(kind)
         val data = JSONObject().put("kind", kind).put("status", usbSerialManager.statusJson()).put("readOnly", true)
-        runBlocking { remoteLogUploader.uploadLog("INFO", "UsbSerialManager", "USB permission requested", data) }
+        val message = if (permissionStatus.permissionGranted) "USB permission already granted" else "USB permission requested"
+        runBlocking { remoteLogUploader.uploadLog("INFO", "UsbSerialManager", message, data) }
         data
     }
     @JavascriptInterface fun openUsbSerial(json: String): String = handle {
@@ -106,26 +107,47 @@ class CamperAgentBridge(context: Context) {
     }
     @JavascriptInterface fun connectObd(json: String): String = handle {
         val settings = validatedJson(json)
-        val baud = if (settings.optString("baudRate", "Auto") == "Auto") FordTransitEcoBlue2016Profile.autoBaudOrder.first() else settings.optInt("baudRate", 115200)
+        val baudText = settings.optString("baudRate", "Auto")
+        val baud = if (baudText == "Auto") FordTransitEcoBlue2016Profile.autoBaudOrder.first() else baudText.toIntOrNull() ?: 115200
         obdRepository.addLog("state", state = "OBD connect started")
         runBlocking { remoteLogUploader.uploadLog("INFO", "ObdRepository", "OBD connect started", JSONObject().put("baudRate", baud).put("protocol", "ISO15765-4 CAN 11/500")) }
-        usbSerialManager.openFirst(baud)
-        val open = usbSerialManager.status.value.open
-        if (open) {
-            listOf("ATI", "AT@1", "ATZ", "ATSP6", "ATDP", "ATDPN", "0100").forEach {
-                obdRepository.addLog("tx", command = it, state = "AdapterProbing")
-                runBlocking { remoteLogUploader.uploadLog("INFO", "ObdRepository", "OBD probe step", JSONObject().put("command", it).put("state", "AdapterProbing")) }
-            }
-        } else {
-            obdRepository.addLog("error", state = usbSerialManager.status.value.state.name, response = usbSerialManager.status.value.error)
+        val permissionStatus = usbSerialManager.ensurePermissionFirst("obd")
+        if (!permissionStatus.permissionGranted) {
+            obdRepository.addLog("state", state = permissionStatus.state.name, response = permissionStatus.error)
+            runBlocking { remoteLogUploader.uploadLog("INFO", "UsbSerialManager", "Waiting for USB permission", usbSerialManager.statusJson()) }
+            return@handle JSONObject()
+                .put("state", permissionStatus.state.name)
+                .put("baudRate", baud)
+                .put("protocol", "ISO15765-4 CAN 11/500")
+                .put("message", permissionStatus.error ?: "Waiting for Android USB permission")
+                .put("rawLog", obdRepository.rawLogTail())
+                .put("readOnly", true)
         }
+        val openStatus = usbSerialManager.openFirst(baud)
+        if (!openStatus.open) {
+            obdRepository.addLog("error", state = "SerialOpenFailed", response = openStatus.error)
+            runBlocking { remoteLogUploader.uploadLog("ERROR", "UsbSerialManager", "Serial not open", usbSerialManager.statusJson()) }
+            return@handle JSONObject()
+                .put("state", "SerialOpenFailed")
+                .put("baudRate", baud)
+                .put("protocol", "ISO15765-4 CAN 11/500")
+                .put("message", openStatus.error ?: "Serial port is not open")
+                .put("rawLog", obdRepository.rawLogTail())
+                .put("readOnly", true)
+        }
+        val probe = probeObdAdapter(baudText == "Auto")
+        val finalState = probe.optString("state", "Serial open")
         JSONObject()
-            .put("state", if (open) "Serial open" else usbSerialManager.status.value.state.name)
+            .put("state", finalState)
             .put("baudRate", baud)
             .put("protocol", "ISO15765-4 CAN 11/500")
             .put("elmProtocol", FordTransitEcoBlue2016Profile.preferredElmProtocol)
             .put("initSequence", org.json.JSONArray(FordTransitEcoBlue2016Profile.initSequence))
-            .put("message", if (open) "Serial is open. If adapter does not answer ATI, try another baud rate." else usbSerialManager.status.value.error ?: "")
+            .put("message", probe.optString("message"))
+            .put("lastTx", probe.optString("lastTx", ""))
+            .put("lastRx", probe.optString("lastRx", ""))
+            .put("lastError", probe.optString("lastError", ""))
+            .put("rawLog", obdRepository.rawLogTail())
             .put("readOnly", true)
     }
     @JavascriptInterface fun disconnectObd(): String = handle {
@@ -136,7 +158,12 @@ class CamperAgentBridge(context: Context) {
     @JavascriptInterface fun sendReadOnlyObdCommand(command: String): String = handle {
         val normalized = command.trim().uppercase()
         require(!isBlockedObdCommand(normalized)) { "Blocked unsafe OBD command" }
-        JSONObject().put("command", normalized).put("queued", false).put("readOnly", true)
+        val result = if (usbSerialManager.status.value.open) sendObdCommand(normalized, 2_000, "RawTest") else JSONObject()
+            .put("direction", "error")
+            .put("command", normalized)
+            .put("error", "USB serial port is not open")
+            .put("state", "RawTest")
+        result.put("rawLog", obdRepository.rawLogTail()).put("readOnly", true)
     }
     @JavascriptInterface fun scanSupportedPids(): String = ok(JSONObject().put("commands", org.json.JSONArray(listOf("0100", "0120", "0140", "0160"))).put("readOnly", true))
     @JavascriptInterface fun readDtcReadOnly(): String = ok(JSONObject().put("command", "03").put("dtcs", org.json.JSONArray()).put("readOnly", true))
@@ -212,6 +239,85 @@ class CamperAgentBridge(context: Context) {
         .put("bmsStatus", repository.batteryBmsSnapshot())
         .put("remoteLoggingSettings", remoteLogUploader.settings())
         .put("recentErrors", JSONArray())
+
+    private fun probeObdAdapter(autoBaud: Boolean): JSONObject {
+        usbSerialManager.drainInput(300)
+        runCatching {
+            usbSerialManager.writeBytes("\r".toByteArray(Charsets.US_ASCII))
+            usbSerialManager.readUntilPrompt(700)
+        }
+        var lastTx = ""
+        var lastRx = ""
+        var lastError = ""
+        fun run(command: String, timeoutMs: Int, delayAfterMs: Long = 0): JSONObject {
+            lastTx = command
+            val result = sendObdCommand(command, timeoutMs, "AdapterProbing")
+            lastRx = result.optString("response", "")
+            lastError = result.optString("error", "")
+            if (delayAfterMs > 0) Thread.sleep(delayAfterMs)
+            return result
+        }
+
+        var ati = run("ATI", 2_000)
+        if (ati.optString("direction") == "timeout") {
+            runCatching {
+                usbSerialManager.writeBytes("\r\r".toByteArray(Charsets.US_ASCII))
+                usbSerialManager.drainInput(300)
+            }
+            ati = run("ATI", 2_000)
+        }
+        if (ati.optString("direction") == "timeout" && autoBaud) {
+            return JSONObject()
+                .put("state", "AdapterNoResponse")
+                .put("message", "USB serial is open but vLinker did not answer ATI. Try different USB baud or reconnect adapter.")
+                .put("lastTx", lastTx)
+                .put("lastRx", lastRx)
+                .put("lastError", lastError)
+        }
+        run("AT@1", 2_000)
+        run("ATZ", 3_000, 1_000)
+        listOf("ATE0", "ATL0", "ATS0", "ATH1", "ATAL", "ATST96", "ATSP6", "ATDP", "ATDPN").forEach { run(it, 2_000) }
+        val supported = run("0100", 5_000)
+        if (supported.optString("response").contains("NO DATA", ignoreCase = true) || supported.optString("direction") == "timeout") {
+            return JSONObject()
+                .put("state", "EcuNoResponse")
+                .put("message", "vLinker answers AT commands, but vehicle ECU did not respond on ISO15765-4 CAN11/500.")
+                .put("lastTx", lastTx)
+                .put("lastRx", lastRx)
+                .put("lastError", lastError)
+        }
+        return JSONObject()
+            .put("state", "OBD connected")
+            .put("message", "Adapter and ECU responded")
+            .put("lastTx", lastTx)
+            .put("lastRx", lastRx)
+            .put("lastError", lastError)
+    }
+
+    private fun sendObdCommand(command: String, timeoutMs: Int, state: String): JSONObject {
+        val started = System.currentTimeMillis()
+        return try {
+            obdRepository.addLog("tx", command = command, state = state)
+            runBlocking { remoteLogUploader.uploadLog("INFO", "ObdRepository", "OBD TX", JSONObject().put("direction", "tx").put("command", command).put("state", state)) }
+            usbSerialManager.writeBytes((command.trim() + "\r").toByteArray(Charsets.US_ASCII))
+            val response = usbSerialManager.readUntilPrompt(timeoutMs).trim()
+            val elapsed = System.currentTimeMillis() - started
+            if (response.isBlank()) {
+                obdRepository.addLog("timeout", command = command, state = state, response = "No prompt/response")
+                runBlocking { remoteLogUploader.uploadLog("WARN", "ObdRepository", "OBD timeout", JSONObject().put("direction", "timeout").put("command", command).put("elapsedMs", elapsed).put("state", state).put("error", "No prompt/response")) }
+                JSONObject().put("direction", "timeout").put("command", command).put("elapsedMs", elapsed).put("state", state).put("error", "No prompt/response")
+            } else {
+                obdRepository.addLog("rx", command = command, response = response, state = state, elapsedMs = elapsed)
+                runBlocking { remoteLogUploader.uploadLog("INFO", "ObdRepository", "OBD RX", JSONObject().put("direction", "rx").put("command", command).put("response", response).put("elapsedMs", elapsed).put("state", state)) }
+                JSONObject().put("direction", "rx").put("command", command).put("response", response).put("elapsedMs", elapsed).put("state", state)
+            }
+        } catch (error: Throwable) {
+            val elapsed = System.currentTimeMillis() - started
+            obdRepository.addLog("error", command = command, response = error.message, state = state, elapsedMs = elapsed)
+            runBlocking { remoteLogUploader.uploadLog("ERROR", "ObdRepository", "OBD error", JSONObject().put("direction", "error").put("command", command).put("elapsedMs", elapsed).put("state", state).put("error", error.message ?: "unknown")) }
+            JSONObject().put("direction", "error").put("command", command).put("elapsedMs", elapsed).put("state", state).put("error", error.message ?: "unknown")
+        }
+    }
 
     private fun diagnosticsFile(): File {
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date())

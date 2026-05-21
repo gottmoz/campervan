@@ -199,11 +199,13 @@ class CamperAgentBridge(context: Context) {
         JSONObject().put("state", "Disconnected").put("readOnly", true)
     }
     @JavascriptInterface fun getObdConnectionStatus(): String = ok(usbSerialManager.statusJson()
+        .put("state", if (obdConnected) "ObdConnected" else usbSerialManager.status.value.state.name)
         .put("protocol", "ISO15765-4 CAN 11/500")
         .put("elmProtocol", "6")
         .put("connected", obdConnected)
         .put("verified", obdConnected)
         .put("polling", obdPolling)
+        .put("supportedPids", obdRepository.telemetryJson().optJSONArray("supportedPids") ?: JSONArray())
         .put("telemetry", obdRepository.telemetryJson()))
     @JavascriptInterface fun sendReadOnlyObdCommand(command: String): String = handle {
         val normalized = command.trim().uppercase()
@@ -359,7 +361,13 @@ class CamperAgentBridge(context: Context) {
                 .put("lastRx", lastRx)
                 .put("lastError", lastError)
         }
-        val supportedPids = ObdPidDecoder.decodeSupportedPids(supported.optString("response"), 0x00)
+        val decodedSupportedPids = ObdPidDecoder.decodeSupportedPids(supported.optString("response"), 0x00)
+        val supportedPids = if (decodedSupportedPids.isNotEmpty()) decodedSupportedPids else FALLBACK_POLL_PIDS
+        val pidWarning = if (decodedSupportedPids.isEmpty()) "PID bitmap decode failed, using fallback poll list" else ""
+        if (pidWarning.isNotBlank()) {
+            obdRepository.addLog("state", state = "ObdConnected", response = pidWarning)
+            runBlocking { remoteLogUploader.uploadLog("WARN", "ObdRepository", pidWarning, JSONObject().put("ecuResponse", supported.optString("response")).put("fallbackPids", JSONArray(FALLBACK_POLL_PIDS.sorted()))) }
+        }
         obdRepository.updateSupportedPids(supportedPids)
         obdConnected = true
         startObdPolling(supportedPids)
@@ -371,6 +379,7 @@ class CamperAgentBridge(context: Context) {
                 JSONObject()
                     .put("protocol", "ISO15765-4 CAN 11/500")
                     .put("elmProtocol", "6")
+                    .put("ecuResponse", supported.optString("response"))
                     .put("supportedPids", JSONArray(supportedPids.sorted()))
                     .put("polling", obdPolling)
             )
@@ -380,6 +389,7 @@ class CamperAgentBridge(context: Context) {
             .put("detectedProtocol", detectedProtocol)
             .put("lastEcuResponse", supported.optString("response"))
             .put("supportedPids", JSONArray(supportedPids.sorted()))
+            .put("warning", pidWarning)
             .put("lastError", lastError)
     }
 
@@ -410,8 +420,7 @@ class CamperAgentBridge(context: Context) {
 
     private fun startObdPolling(supportedPids: Set<String>) {
         if (obdPolling) return
-        val pollPids = listOf("0C", "0D", "05", "0F", "10", "11", "42", "46").filter { it in supportedPids }
-        if (pollPids.isEmpty()) return
+        val pollPids = (PRIMARY_POLL_ORDER.filter { it in supportedPids }).ifEmpty { FALLBACK_POLL_ORDER }
         obdPolling = true
         runBlocking {
             remoteLogUploader.uploadLog("INFO", "ObdRepository", "polling start", JSONObject().put("pids", JSONArray(pollPids)))
@@ -449,6 +458,7 @@ class CamperAgentBridge(context: Context) {
         .put("lastTx", lastTx)
         .put("lastRx", lastRx)
         .put("telemetry", obdRepository.telemetryJson())
+        .put("supportedPids", obdRepository.telemetryJson().optJSONArray("supportedPids") ?: JSONArray())
         .put("rawLog", obdRepository.rawLogTail())
         .put("readOnly", true)
 
@@ -477,6 +487,12 @@ class CamperAgentBridge(context: Context) {
     private fun isBlockedObdCommand(command: String): Boolean {
         val service = command.take(2)
         return service in setOf("04", "14", "2E", "10", "27", "28", "2F", "31", "3D", "85")
+    }
+
+    companion object {
+        private val PRIMARY_POLL_ORDER = listOf("0C", "0D", "05", "0F", "10", "11", "42", "46")
+        private val FALLBACK_POLL_ORDER = listOf("0C", "0D", "05", "0F")
+        private val FALLBACK_POLL_PIDS = FALLBACK_POLL_ORDER.toSet()
     }
 
 }

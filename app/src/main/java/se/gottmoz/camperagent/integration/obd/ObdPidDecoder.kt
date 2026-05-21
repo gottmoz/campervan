@@ -30,15 +30,15 @@ object ObdPidDecoder {
         val data = parsed.dataBytes
         return when (pid.uppercase()) {
             "0C" -> if (data.size >= 2) ObdTelemetry(rpm = rpm(data[0], data[1])) else ObdTelemetry()
-            "0D" -> ObdTelemetry(speedKph = speed(data[0]))
-            "05" -> ObdTelemetry(coolantTempC = temperature(data[0]))
-            "0F" -> ObdTelemetry(intakeTempC = temperature(data[0]))
+            "0D" -> if (data.isNotEmpty()) ObdTelemetry(speedKph = speed(data[0])) else ObdTelemetry()
+            "05" -> if (data.isNotEmpty()) ObdTelemetry(coolantTempC = temperature(data[0])) else ObdTelemetry()
+            "0F" -> if (data.isNotEmpty()) ObdTelemetry(intakeTempC = temperature(data[0])) else ObdTelemetry()
             "10" -> if (data.size >= 2) ObdTelemetry(mafGps = maf(data[0], data[1])) else ObdTelemetry()
-            "11" -> ObdTelemetry(throttlePercent = throttle(data[0]))
+            "11" -> if (data.isNotEmpty()) ObdTelemetry(throttlePercent = throttle(data[0])) else ObdTelemetry()
             "42" -> if (data.size >= 2) ObdTelemetry(moduleVoltage = moduleVoltage(data[0], data[1])) else ObdTelemetry()
-            "46" -> ObdTelemetry(ambientTempC = temperature(data[0]))
-            "61" -> ObdTelemetry(driverDemandTorquePercent = torquePercent(data[0]))
-            "62" -> ObdTelemetry(actualTorquePercent = torquePercent(data[0]))
+            "46" -> if (data.isNotEmpty()) ObdTelemetry(ambientTempC = temperature(data[0])) else ObdTelemetry()
+            "61" -> if (data.isNotEmpty()) ObdTelemetry(driverDemandTorquePercent = torquePercent(data[0])) else ObdTelemetry()
+            "62" -> if (data.isNotEmpty()) ObdTelemetry(actualTorquePercent = torquePercent(data[0])) else ObdTelemetry()
             "63" -> if (data.size >= 2) ObdTelemetry(engineReferenceTorqueNm = referenceTorqueNm(data[0], data[1])) else ObdTelemetry()
             else -> ObdTelemetry()
         }

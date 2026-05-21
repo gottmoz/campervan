@@ -2,6 +2,7 @@ package se.gottmoz.camperagent.integration.obd
 
 data class ParsedObdResponse(
     val ecuId: String?,
+    val length: Int?,
     val service: String,
     val pid: String,
     val dataBytes: List<Int>,
@@ -32,8 +33,10 @@ object ObdResponseParser {
     private fun parseCandidate(candidate: String, rawClean: String): ParsedObdResponse? {
         var offset = 0
         var ecuId: String? = null
+        var length: Int? = null
         if (candidate.length >= 8 && candidate.take(3).matches(Regex("7E[8-9A-F]"))) {
             ecuId = candidate.take(3)
+            length = candidate.substring(3, 5).toIntOrNull(16)
             offset = 5
         }
         if (candidate.length < offset + 4) return null
@@ -41,6 +44,6 @@ object ObdResponseParser {
         if (service != "41") return null
         val pid = candidate.substring(offset + 2, offset + 4)
         val data = candidate.substring(offset + 4).chunked(2).mapNotNull { it.toIntOrNull(16) }
-        return ParsedObdResponse(ecuId, service, pid, data, rawClean)
+        return ParsedObdResponse(ecuId, length, service, pid, data, rawClean)
     }
 }

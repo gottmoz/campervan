@@ -418,10 +418,10 @@ function VehicleDashboardView() {
       <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_34%,rgba(14,165,233,0.15),transparent_32%),linear-gradient(180deg,rgba(2,6,23,0.3),#020617)]" />
       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-44 bg-[linear-gradient(rgba(14,165,233,0.10)_1px,transparent_1px),linear-gradient(90deg,rgba(14,165,233,0.10)_1px,transparent_1px)] bg-[size:42px_24px] opacity-40 [transform:perspective(260px)_rotateX(58deg)]" />
       <div className="relative grid h-full grid-rows-[58px_1fr_76px] gap-2 p-3">
-        <div className="grid grid-cols-[300px_1fr_300px] items-center border-b border-cyan-300/35 bg-slate-950/55 px-4 shadow-lg shadow-cyan-500/10 [clip-path:polygon(0_0,100%_0,100%_78%,84%_78%,83%_100%,17%_100%,16%_78%,0_78%)]">
+        <div className="relative z-10 grid grid-cols-[390px_1fr_270px] items-center border-b border-cyan-300/35 bg-slate-950/55 px-4 shadow-lg shadow-cyan-500/10 [clip-path:polygon(0_0,100%_0,100%_78%,84%_78%,83%_100%,17%_100%,16%_78%,0_78%)]">
           <div className="flex items-center gap-4">
             <div className="rounded-full border border-cyan-300/60 px-4 py-1 font-serif text-2xl italic text-white shadow-lg shadow-cyan-400/20">Ford</div>
-            <div className="text-2xl font-black uppercase tracking-[0.16em] text-white">Vehicle Dashboard</div>
+            <div className="text-xl font-black uppercase tracking-[0.14em] text-white">Vehicle Dashboard</div>
             <div className={`rounded-xl border px-3 py-1 text-xs font-black ${statusClass}`}>? {status}</div>
           </div>
           <div className="text-center text-lg font-black uppercase tracking-[0.18em] text-cyan-300">Ford Transit Campervan</div>
@@ -432,18 +432,22 @@ function VehicleDashboardView() {
         </div>
 
         {page === "dashboard" && (
-          <div className="grid min-h-0 grid-cols-[1fr_250px_1fr] grid-rows-[1fr_124px] gap-3">
-            <div className="row-span-2"><FuturisticGauge label="RPM" value={Number.isFinite(data.rpm) ? data.rpm / 1000 : null} min={0} max={5} unit="x1000" marks={[0, 1, 2, 3, 4, 5]} redFrom={4} formatter={() => Math.round(data.rpm).toLocaleString("sv-SE")} accent="#20c8ff" stale={stale} /></div>
-            <div className="flex flex-col items-center justify-center border border-cyan-300/30 bg-slate-950/70 shadow-xl shadow-cyan-500/10 [clip-path:polygon(12%_0,88%_0,100%_12%,100%_88%,88%_100%,12%_100%,0_88%,0_12%)]">
-              <div className="text-sm font-black uppercase tracking-[0.2em] text-cyan-300">Gear</div>
-              <div className="mt-1 text-5xl font-black text-white">{gear}</div>
-              <div className="mt-6 h-28 w-36 rounded-t-[3rem] border border-cyan-300/40 border-b-cyan-300/10 bg-[radial-gradient(circle_at_50%_70%,rgba(34,211,238,0.22),transparent_42%)]" />
-              <div className="mt-2 text-xs font-bold uppercase tracking-[0.18em] text-cyan-200">Transit</div>
+          <div className="grid min-h-0 grid-rows-[minmax(0,1fr)_124px] gap-3">
+            <div className="grid min-h-0 grid-cols-[1fr_250px_1fr] gap-3">
+              <FuturisticGauge label="RPM" value={Number.isFinite(data.rpm) ? data.rpm / 1000 : null} min={0} max={5} unit="x1000" marks={[0, 1, 2, 3, 4, 5]} redFrom={4} formatter={() => Math.round(data.rpm).toLocaleString("sv-SE")} accent="#20c8ff" stale={stale} />
+              <div className="flex min-h-0 flex-col items-center justify-center border border-cyan-300/30 bg-slate-950/70 shadow-xl shadow-cyan-500/10 [clip-path:polygon(12%_0,88%_0,100%_12%,100%_88%,88%_100%,12%_100%,0_88%,0_12%)]">
+                <div className="text-sm font-black uppercase tracking-[0.2em] text-cyan-300">Gear</div>
+                <div className="mt-1 text-5xl font-black text-white">{gear}</div>
+                <div className="mt-6 h-24 w-32 rounded-t-[3rem] border border-cyan-300/40 border-b-cyan-300/10 bg-[radial-gradient(circle_at_50%_70%,rgba(34,211,238,0.22),transparent_42%)]" />
+                <div className="mt-2 text-xs font-bold uppercase tracking-[0.18em] text-cyan-200">Transit</div>
+              </div>
+              <FuturisticGauge label="km/h" value={data.speedKph} min={0} max={200} unit="km/h" marks={[0,20,40,60,80,100,120,140,160,180,200]} redFrom={170} formatter={(v) => Math.round(v)} accent="#20c8ff" stale={stale} />
             </div>
-            <div className="row-span-2"><FuturisticGauge label="km/h" value={data.speedKph} min={0} max={200} unit="km/h" marks={[0,20,40,60,80,100,120,140,160,180,200]} redFrom={170} formatter={(v) => Math.round(v)} accent="#20c8ff" stale={stale} /></div>
-            <VehicleTempCard label="Coolant Temp" value={data.coolantTempC} min={40} max={120} warning={100} icon="?" stale={stale} />
-            <VehicleTempCard label="Oil Temp" value={oilValue} min={40} max={130} warning={115} icon="?" subtext={oilValue == null ? "Not available" : undefined} simulated={isSimulated && oilValue != null} stale={stale} />
-            <VehicleTempCard label="Outside Temp" value={outsideValue} min={-30} max={50} warning={45} icon="?" subtext={outsideValue == null ? "Not available" : undefined} stale={stale} />
+            <div className="grid min-h-0 grid-cols-3 gap-3">
+              <VehicleTempCard label="Coolant Temp" value={data.coolantTempC} min={40} max={120} warning={100} icon="?" stale={stale} />
+              <VehicleTempCard label="Oil Temp" value={oilValue} min={40} max={130} warning={115} icon="?" subtext={oilValue == null ? "Not available" : undefined} simulated={isSimulated && oilValue != null} stale={stale} />
+              <VehicleTempCard label="Outside Temp" value={outsideValue} min={-30} max={50} warning={45} icon="?" subtext={outsideValue == null ? "Not available" : undefined} stale={stale} />
+            </div>
           </div>
         )}
 

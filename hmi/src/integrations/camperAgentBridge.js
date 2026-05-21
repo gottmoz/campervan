@@ -54,6 +54,36 @@ const simulator = {
   connectObd: (json) => ({ state: "PermissionRequired", connected: false, verified: false, protocol: json.protocol || "ISO15765-4 CAN 11/500", elmProtocol: "6", readOnly: true }),
   disconnectObd: () => ({ state: "Disconnected", readOnly: true }),
   getObdConnectionStatus: () => ({ state: "NoDevice", protocol: "ISO15765-4 CAN 11/500", elmProtocol: "6", readOnly: true }),
+  getVehicleTelemetrySnapshot: () => {
+    const t = Date.now() / 1000;
+    const rpm = Math.round(1450 + Math.sin(t * 1.3) * 420);
+    const speedKph = Math.max(0, Math.round(72 + Math.sin(t * 0.45) * 18));
+    return {
+      connected: true,
+      verified: true,
+      polling: true,
+      stale: false,
+      lastSuccessEpochMs: Date.now(),
+      adapterName: "ELM327 v2.3",
+      adapterDescription: "OBDII to RS232 Interpreter",
+      protocol: "ISO 15765-4 (CAN 11/500)",
+      elmProtocol: "6",
+      telemetry: {
+        rpm,
+        speedKph,
+        coolantTempC: Math.round(86 + Math.sin(t * 0.08) * 3),
+        intakeTempC: Math.round(24 + Math.sin(t * 0.15) * 5),
+        moduleVoltage: Math.round((14.1 + Math.sin(t * 0.4) * 0.12) * 10) / 10,
+        mafGps: Math.round((18 + Math.sin(t * 0.8) * 6) * 10) / 10,
+        throttlePercent: Math.round(22 + Math.sin(t * 1.1) * 9),
+        ambientTempC: 16,
+        engineLoadPercent: Math.round(38 + Math.sin(t * 0.7) * 12),
+      },
+      supportedPids: ["0C", "0D", "05", "0F", "10", "11", "42"],
+      pidErrorCounts: { "0C": 0, "0D": 0, "05": 0 },
+      lastError: null,
+    };
+  },
   sendReadOnlyObdCommand: (command) => ({ command, queued: false, readOnly: true }),
   scanSupportedPids: () => ({ commands: ["0100", "0120", "0140", "0160"], readOnly: true }),
   readDtcReadOnly: () => ({ command: "03", dtcs: [], readOnly: true }),
@@ -161,6 +191,7 @@ export const camperAgentBridge = {
   connectObd: (settings) => call("connectObd", settings),
   disconnectObd: () => call("disconnectObd"),
   getObdConnectionStatus: () => call("getObdConnectionStatus"),
+  getVehicleTelemetrySnapshot: () => call("getVehicleTelemetrySnapshot"),
   sendReadOnlyObdCommand: (command) => call("sendReadOnlyObdCommand", command),
   scanSupportedPids: () => call("scanSupportedPids"),
   readDtcReadOnly: () => call("readDtcReadOnly"),

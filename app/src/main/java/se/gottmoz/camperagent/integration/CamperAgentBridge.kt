@@ -22,6 +22,7 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import java.util.concurrent.ConcurrentHashMap
 
 class CamperAgentBridge(context: Context) {
     private val appContext = context.applicationContext
@@ -32,8 +33,15 @@ class CamperAgentBridge(context: Context) {
     private val remoteLogUploader = RemoteLogUploader(context.applicationContext)
     private val obdRepository = ObdRepository()
     private val tcan485Repository = TCan485Repository(TCan485SettingsStore(context.applicationContext))
+    private val obdCommandLock = Any()
+    private val pidErrorCounts = ConcurrentHashMap<String, Int>()
     @Volatile private var obdPolling = false
     @Volatile private var obdConnected = false
+    @Volatile private var obdState = "Disconnected"
+    @Volatile private var lastObdSuccessEpochMs = 0L
+    @Volatile private var lastObdError: String? = null
+    @Volatile private var adapterName = "ELM327 v2.3"
+    @Volatile private var adapterDescription = "OBDII to RS232 Interpreter"
 
     @JavascriptInterface fun getIntegrationSnapshot(): String = ok(repository.snapshot())
     @JavascriptInterface fun getBatteryBmsSnapshot(): String = ok(repository.batteryBmsSnapshot())
@@ -148,6 +156,7 @@ class CamperAgentBridge(context: Context) {
         if (obdConnected && obdPolling) {
             return@handle obdConnectedJson("Already connected", "", "")
         }
+        obdState = "Connecting"
         val settings = validatedJson(json)
         val baudText = settings.optString("baudRate", "Auto")
         val baud = if (baudText == "Auto") FordTransitEcoBlue2016Profile.autoBaudOrder.first() else baudText.toIntOrNull() ?: 115200
@@ -178,6 +187,12 @@ class CamperAgentBridge(context: Context) {
                 .put("readOnly", true)
         }
         val probe = probeObdAdapter(baudText == "Auto")
+        if (probe.optString("state") == "ObdConnected") {
+            return@handle probe
+                .put("baudRate", baud)
+                .put("initSequence", JSONArray(FordTransitEcoBlue2016Profile.initSequence))
+                .put("readOnly", true)
+        }
         val finalState = probe.optString("state", "Serial open")
         JSONObject()
             .put("state", finalState)
@@ -195,18 +210,12 @@ class CamperAgentBridge(context: Context) {
     @JavascriptInterface fun disconnectObd(): String = handle {
         obdPolling = false
         obdConnected = false
+        obdState = "Disconnected"
         usbSerialManager.close()
         JSONObject().put("state", "Disconnected").put("readOnly", true)
     }
-    @JavascriptInterface fun getObdConnectionStatus(): String = ok(usbSerialManager.statusJson()
-        .put("state", if (obdConnected) "ObdConnected" else usbSerialManager.status.value.state.name)
-        .put("protocol", "ISO15765-4 CAN 11/500")
-        .put("elmProtocol", "6")
-        .put("connected", obdConnected)
-        .put("verified", obdConnected)
-        .put("polling", obdPolling)
-        .put("supportedPids", obdRepository.telemetryJson().optJSONArray("supportedPids") ?: JSONArray())
-        .put("telemetry", obdRepository.telemetryJson()))
+    @JavascriptInterface fun getObdConnectionStatus(): String = ok(vehicleTelemetrySnapshot())
+    @JavascriptInterface fun getVehicleTelemetrySnapshot(): String = ok(vehicleTelemetrySnapshot())
     @JavascriptInterface fun sendReadOnlyObdCommand(command: String): String = handle {
         val normalized = command.trim().uppercase()
         require(!isBlockedObdCommand(normalized)) { "Blocked unsafe OBD command" }
@@ -342,8 +351,10 @@ class CamperAgentBridge(context: Context) {
                 .put("lastError", lastError)
         }
         adapterIdentity = ati.optString("response")
-        if (adapterIdentity.isBlank()) adapterIdentity = run("AT@1", 2_000).optString("response")
-        else run("AT@1", 2_000)
+        adapterName = adapterIdentity.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty().ifBlank { "ELM327 v2.3" }
+        val atDescription = if (adapterIdentity.isBlank()) run("AT@1", 2_000).optString("response") else run("AT@1", 2_000).optString("response")
+        adapterDescription = atDescription.lineSequence().firstOrNull { it.isNotBlank() }?.trim().orEmpty().ifBlank { "OBDII to RS232 Interpreter" }
+        obdState = "AdapterDetected"
         run("ATZ", 3_000, 1_000)
         listOf("ATE0", "ATL0", "ATS0", "ATH1", "ATAL", "ATST96", "ATSP6", "ATDP", "ATDPN").forEach { run(it, 2_000) }
         detectedProtocol = rawLogValue("ATDP").ifBlank { "ISO 15765-4 (CAN 11/500)" }
@@ -370,6 +381,9 @@ class CamperAgentBridge(context: Context) {
         }
         obdRepository.updateSupportedPids(supportedPids)
         obdConnected = true
+        lastObdSuccessEpochMs = System.currentTimeMillis()
+        lastObdError = null
+        obdState = "ObdConnected"
         startObdPolling(supportedPids)
         runBlocking {
             remoteLogUploader.uploadLog(
@@ -396,22 +410,25 @@ class CamperAgentBridge(context: Context) {
     private fun sendObdCommand(command: String, timeoutMs: Int, state: String): JSONObject {
         val started = System.currentTimeMillis()
         return try {
-            obdRepository.addLog("tx", command = command, state = state)
-            runBlocking { remoteLogUploader.uploadLog("INFO", "ObdRepository", "OBD TX", JSONObject().put("direction", "tx").put("command", command).put("state", state)) }
-            usbSerialManager.writeBytes((command.trim() + "\r").toByteArray(Charsets.US_ASCII))
-            val response = usbSerialManager.readUntilPrompt(timeoutMs).trim()
-            val elapsed = System.currentTimeMillis() - started
-            if (response.isBlank()) {
-                obdRepository.addLog("timeout", command = command, state = state, response = "No prompt/response")
-                runBlocking { remoteLogUploader.uploadLog("WARN", "ObdRepository", "OBD timeout", JSONObject().put("direction", "timeout").put("command", command).put("elapsedMs", elapsed).put("state", state).put("error", "No prompt/response")) }
-                JSONObject().put("direction", "timeout").put("command", command).put("elapsedMs", elapsed).put("state", state).put("error", "No prompt/response")
-            } else {
-                obdRepository.addLog("rx", command = command, response = response, state = state, elapsedMs = elapsed)
-                runBlocking { remoteLogUploader.uploadLog("INFO", "ObdRepository", "OBD RX", JSONObject().put("direction", "rx").put("command", command).put("response", response).put("elapsedMs", elapsed).put("state", state)) }
-                JSONObject().put("direction", "rx").put("command", command).put("response", response).put("elapsedMs", elapsed).put("state", state)
+            synchronized(obdCommandLock) {
+                obdRepository.addLog("tx", command = command, state = state)
+                runBlocking { remoteLogUploader.uploadLog("INFO", "ObdRepository", "OBD TX", JSONObject().put("direction", "tx").put("command", command).put("state", state)) }
+                usbSerialManager.writeBytes((command.trim() + "\r").toByteArray(Charsets.US_ASCII))
+                val response = usbSerialManager.readUntilPrompt(timeoutMs).trim()
+                val elapsed = System.currentTimeMillis() - started
+                if (response.isBlank()) {
+                    obdRepository.addLog("timeout", command = command, state = state, response = "No prompt/response")
+                    runBlocking { remoteLogUploader.uploadLog("WARN", "ObdRepository", "OBD timeout", JSONObject().put("direction", "timeout").put("command", command).put("elapsedMs", elapsed).put("state", state).put("error", "No prompt/response")) }
+                    JSONObject().put("direction", "timeout").put("command", command).put("elapsedMs", elapsed).put("state", state).put("error", "No prompt/response")
+                } else {
+                    obdRepository.addLog("rx", command = command, response = response, state = state, elapsedMs = elapsed)
+                    runBlocking { remoteLogUploader.uploadLog("INFO", "ObdRepository", "OBD RX", JSONObject().put("direction", "rx").put("command", command).put("response", response).put("elapsedMs", elapsed).put("state", state)) }
+                    JSONObject().put("direction", "rx").put("command", command).put("response", response).put("elapsedMs", elapsed).put("state", state)
+                }
             }
         } catch (error: Throwable) {
             val elapsed = System.currentTimeMillis() - started
+            lastObdError = error.message ?: "unknown"
             obdRepository.addLog("error", command = command, response = error.message, state = state, elapsedMs = elapsed)
             runBlocking { remoteLogUploader.uploadLog("ERROR", "ObdRepository", "OBD error", JSONObject().put("direction", "error").put("command", command).put("elapsedMs", elapsed).put("state", state).put("error", error.message ?: "unknown")) }
             JSONObject().put("direction", "error").put("command", command).put("elapsedMs", elapsed).put("state", state).put("error", error.message ?: "unknown")
@@ -420,29 +437,113 @@ class CamperAgentBridge(context: Context) {
 
     private fun startObdPolling(supportedPids: Set<String>) {
         if (obdPolling) return
-        val pollPids = (PRIMARY_POLL_ORDER.filter { it in supportedPids }).ifEmpty { FALLBACK_POLL_ORDER }
+        val fastPids = listOf("0C", "0D").filter { it in supportedPids }.ifEmpty { listOf("0C", "0D") }
+        val mediumPids = listOf("05", "0F", "11", "10", "42", "46").filter { it in supportedPids }
         obdPolling = true
+        obdState = "Polling"
         runBlocking {
-            remoteLogUploader.uploadLog("INFO", "ObdRepository", "polling start", JSONObject().put("pids", JSONArray(pollPids)))
+            remoteLogUploader.uploadLog("INFO", "ObdRepository", "polling start", JSONObject().put("pids", JSONArray((fastPids + mediumPids).distinct())))
         }
         Thread {
+            var nextFast = 0L
+            var nextMedium = 0L
+            var nextHealth = 0L
+            var recoveryAttempted = false
             while (obdPolling && usbSerialManager.status.value.open) {
-                pollPids.forEach { pid ->
-                    val result = sendObdCommand("01$pid", 2_000, "Polling")
-                    val response = result.optString("response")
-                    if (response.isNotBlank()) {
-                        obdRepository.mergeTelemetry(ObdPidDecoder.decodeTelemetry(pid, response))
-                    }
-                    Thread.sleep(if (pid in setOf("0C", "0D")) 250L else 500L)
+                val now = System.currentTimeMillis()
+                if (now >= nextFast) {
+                    fastPids.forEach { pollPid(it) }
+                    nextFast = now + 750
                 }
-                Thread.sleep(500L)
+                if (now >= nextMedium) {
+                    mediumPids.forEach { pollPid(it) }
+                    nextMedium = now + 2_000
+                }
+                if (now >= nextHealth) {
+                    val ageMs = if (lastObdSuccessEpochMs == 0L) Long.MAX_VALUE else now - lastObdSuccessEpochMs
+                    if (ageMs > 10_000 && ageMs <= 20_000) {
+                        obdState = "Stale"
+                        runBlocking { remoteLogUploader.uploadLog("WARN", "ObdRepository", "stale detected", vehicleTelemetrySnapshot()) }
+                        if (!recoveryAttempted) {
+                            recoveryAttempted = true
+                            recoverPolling()
+                        }
+                    }
+                    if (ageMs > 20_000) {
+                        obdState = "Reconnecting"
+                        runBlocking { remoteLogUploader.uploadLog("ERROR", "ObdRepository", "recovery failure", vehicleTelemetrySnapshot()) }
+                        recoverPolling()
+                    }
+                    nextHealth = now + 5_000
+                }
+                Thread.sleep(100L)
             }
             obdPolling = false
+            if (!usbSerialManager.status.value.open) {
+                obdConnected = false
+                obdState = "Disconnected"
+            }
         }.apply {
             name = "CamperObdPolling"
             isDaemon = true
             start()
         }
+    }
+
+    private fun pollPid(pid: String) {
+        val result = sendObdCommand("01$pid", 2_000, "Polling")
+        val response = result.optString("response")
+        val parsed = ObdResponseParser.parseMode01(response)
+        if (result.optString("direction") == "rx" && parsed?.pid == pid && !response.contains("NO DATA", ignoreCase = true)) {
+            lastObdSuccessEpochMs = System.currentTimeMillis()
+            lastObdError = null
+            obdState = "Polling"
+            obdRepository.mergeTelemetry(ObdPidDecoder.decodeTelemetry(pid, response))
+            runBlocking { remoteLogUploader.uploadLog("INFO", "ObdRepository", "polling success", JSONObject().put("pid", pid).put("response", response)) }
+        } else {
+            pidErrorCounts[pid] = (pidErrorCounts[pid] ?: 0) + 1
+            lastObdError = result.optString("error").ifBlank { response.ifBlank { "No valid PID response" } }
+            runBlocking { remoteLogUploader.uploadLog("WARN", "ObdRepository", "polling timeout", JSONObject().put("pid", pid).put("errorCount", pidErrorCounts[pid]).put("lastError", lastObdError)) }
+        }
+    }
+
+    private fun recoverPolling() {
+        runBlocking { remoteLogUploader.uploadLog("WARN", "ObdRepository", "recovery start", vehicleTelemetrySnapshot()) }
+        val protocol = sendObdCommand("ATDP", 2_000, "Recovery")
+        val supported = sendObdCommand("0100", 5_000, "Recovery")
+        val parsed = ObdResponseParser.parseMode01(supported.optString("response"))
+        if (protocol.optString("direction") == "rx" && parsed?.pid == "00") {
+            lastObdSuccessEpochMs = System.currentTimeMillis()
+            lastObdError = null
+            obdState = "Polling"
+            runBlocking { remoteLogUploader.uploadLog("INFO", "ObdRepository", "recovery success", JSONObject().put("protocol", protocol.optString("response")).put("ecuResponse", supported.optString("response"))) }
+        } else {
+            obdState = "Reconnecting"
+            lastObdError = supported.optString("error").ifBlank { "Recovery probe failed" }
+            runBlocking { remoteLogUploader.uploadLog("ERROR", "ObdRepository", "recovery failure", JSONObject().put("lastError", lastObdError)) }
+        }
+    }
+
+    private fun vehicleTelemetrySnapshot(): JSONObject {
+        val now = System.currentTimeMillis()
+        val stale = obdConnected && lastObdSuccessEpochMs > 0 && now - lastObdSuccessEpochMs > 10_000
+        val errors = JSONObject()
+        pidErrorCounts.toSortedMap().forEach { (pid, count) -> errors.put(pid, count) }
+        return usbSerialManager.statusJson()
+            .put("state", if (obdConnected) obdState else usbSerialManager.status.value.state.name)
+            .put("connected", obdConnected)
+            .put("verified", obdConnected)
+            .put("polling", obdPolling)
+            .put("stale", stale)
+            .put("lastSuccessEpochMs", if (lastObdSuccessEpochMs > 0) lastObdSuccessEpochMs else JSONObject.NULL)
+            .put("lastError", lastObdError ?: JSONObject.NULL)
+            .put("adapterName", adapterName)
+            .put("adapterDescription", adapterDescription)
+            .put("protocol", "ISO 15765-4 (CAN 11/500)")
+            .put("elmProtocol", "6")
+            .put("supportedPids", obdRepository.telemetryJson().optJSONArray("supportedPids") ?: JSONArray())
+            .put("pidErrorCounts", errors)
+            .put("telemetry", obdRepository.telemetryJson())
     }
 
     private fun obdConnectedJson(message: String, lastTx: String, lastRx: String): JSONObject = JSONObject()
@@ -490,7 +591,6 @@ class CamperAgentBridge(context: Context) {
     }
 
     companion object {
-        private val PRIMARY_POLL_ORDER = listOf("0C", "0D", "05", "0F", "10", "11", "42", "46")
         private val FALLBACK_POLL_ORDER = listOf("0C", "0D", "05", "0F")
         private val FALLBACK_POLL_PIDS = FALLBACK_POLL_ORDER.toSet()
     }

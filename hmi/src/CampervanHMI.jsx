@@ -48,6 +48,11 @@ import {
   YAxis,
 } from "recharts";
 import { camperAgentBridge } from "./integrations/camperAgentBridge";
+import { CircularGauge as VehicleCircularGauge } from "./components/vehicle/CircularGauge";
+import { SemiGauge } from "./components/vehicle/SemiGauge";
+import { HorizontalMeter } from "./components/vehicle/HorizontalMeter";
+import { VehicleStatusCard } from "./components/vehicle/VehicleStatusCard";
+import { SparklineStrip } from "./components/vehicle/SparklineStrip";
 
 // Clean Ford Transit campervan background only. Do not use a full GUI mockup here.
 const VAN_BACKGROUND_URL = "assets/ford-transit-clean-bg.png";
@@ -61,6 +66,7 @@ const DEFAULT_BMS = {
 
 const tabs = [
   { id: "home", label: "Home", icon: Home },
+  { id: "vehicle", label: "Vehicle", icon: Gauge },
   { id: "power", label: "Power", icon: Zap },
   { id: "climate", label: "Climate", icon: Thermometer },
   { id: "water", label: "Water", icon: Droplets },
@@ -259,7 +265,7 @@ function TopBar({ activeScene, setActiveScene }) {
 
 function SideNav({ activeTab, setActiveTab }) {
   return (
-    <div className="flex h-full w-[104px] flex-col items-center gap-2 border-r border-white/10 bg-black/20 py-4">
+    <div className="flex h-full w-[104px] flex-col items-center gap-1 border-r border-white/10 bg-black/20 py-3">
       {tabs.map((tab) => {
         const Icon = tab.icon;
         const active = activeTab === tab.id;
@@ -267,7 +273,7 @@ function SideNav({ activeTab, setActiveTab }) {
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={cx("relative flex h-[72px] w-[82px] flex-col items-center justify-center gap-1 rounded-3xl transition", active ? "text-cyan-100" : "text-slate-500 hover:bg-white/5 hover:text-slate-200")}
+            className={cx("relative flex h-[62px] w-[82px] flex-col items-center justify-center gap-1 rounded-3xl transition", active ? "text-cyan-100" : "text-slate-500 hover:bg-white/5 hover:text-slate-200")}
           >
             {active && <motion.div layoutId="navActive" className="absolute inset-0 rounded-3xl bg-cyan-400/15 ring-1 ring-cyan-300/20" />}
             <Icon size={24} className="relative" />
@@ -372,6 +378,99 @@ function HomeView({ state, setters, openEnergyStats }) {
           </div>
         </GlassCard>
       </div>
+    </div>
+  );
+}
+
+function VehicleDashboardView() {
+  const [snapshot, setSnapshot] = useState(null);
+  const [history, setHistory] = useState({ rpm: [], speedKph: [], coolantTempC: [], moduleVoltage: [] });
+  const data = snapshot?.telemetry || {};
+  const stale = Boolean(snapshot?.stale);
+  const state = snapshot?.state || (snapshot?.connected ? "ObdConnected" : "Disconnected");
+  const lastAge = snapshot?.lastSuccessEpochMs ? Math.max(0, Math.round((Date.now() - snapshot.lastSuccessEpochMs) / 1000)) : null;
+  const engineRunning = Number(data.rpm || 0) > 0;
+
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      const result = await camperAgentBridge.getVehicleTelemetrySnapshot();
+      if (!active) return;
+      const next = result.ok ? result.data : null;
+      if (next) {
+        setSnapshot(next);
+        const telemetry = next.telemetry || {};
+        setHistory((current) => ({
+          rpm: [...current.rpm, telemetry.rpm].slice(-60),
+          speedKph: [...current.speedKph, telemetry.speedKph].slice(-60),
+          coolantTempC: [...current.coolantTempC, telemetry.coolantTempC].slice(-60),
+          moduleVoltage: [...current.moduleVoltage, telemetry.moduleVoltage].slice(-60),
+        }));
+      }
+    }
+    load();
+    const timer = setInterval(load, 750);
+    return () => { active = false; clearInterval(timer); };
+  }, []);
+
+  return (
+    <div className="grid h-full grid-rows-[64px_auto_1fr_auto] gap-3">
+      <div className="flex items-center justify-between rounded-3xl border border-white/10 bg-white/[0.055] px-5 backdrop-blur-xl">
+        <div>
+          <div className="text-2xl font-black text-white">Vehicle Dashboard</div>
+          <div className="text-xs text-slate-400">{snapshot?.protocol || "ISO15765-4 CAN11/500"} · {snapshot?.adapterName || "vLinker / ELM327 v2.3"}</div>
+        </div>
+        <div className="flex items-center gap-2">
+          <StatusBadge value={stale ? "Stale" : snapshot?.polling ? "Polling" : state} />
+          <div className="rounded-full border border-white/10 bg-black/25 px-3 py-1 text-xs font-bold text-slate-300">{lastAge == null ? "No live vehicle data" : stale ? `Last update ${lastAge}s ago` : "Live"}</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-6 gap-2">
+        {[["RPM", data.rpm, ""], ["Speed", data.speedKph, "km/h"], ["Coolant", data.coolantTempC, "C"], ["Voltage", data.moduleVoltage, "V"], ["Throttle", data.throttlePercent, "%"], [engineRunning ? "Engine running" : "Engine off", stale ? "Stale" : "Live", ""]].map(([label, value, unit]) => (
+          <div key={label} className="rounded-2xl border border-white/10 bg-black/25 p-3">
+            <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">{label}</div>
+            <div className="mt-1 text-lg font-black text-white">{value ?? "--"}<span className="ml-1 text-xs text-slate-400">{unit}</span></div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid min-h-0 grid-cols-[1.25fr_1fr_0.9fr] gap-3">
+        <div className="grid grid-cols-2 gap-3">
+          <VehicleCircularGauge label="RPM" value={data.rpm} min={0} max={5000} unit="rpm" warningThreshold={3600} dangerThreshold={4400} accent="#22d3ee" stale={stale} />
+          <VehicleCircularGauge label="Speed" value={data.speedKph} min={0} max={160} unit="km/h" warningThreshold={120} dangerThreshold={145} accent="#60a5fa" stale={stale} />
+          <SemiGauge label="Coolant" value={data.coolantTempC} min={0} max={120} unit="C" stale={stale} />
+          <VehicleCircularGauge label="Voltage" value={data.moduleVoltage} min={11.5} max={15.5} unit="V" warningThreshold={15} dangerThreshold={15.4} accent="#34d399" stale={stale} />
+        </div>
+
+        <div className="space-y-3">
+          <HorizontalMeter label="Throttle" value={data.throttlePercent} min={0} max={100} unit="%" accent="#38bdf8" stale={stale} />
+          <HorizontalMeter label="MAF" value={data.mafGps} min={0} max={120} unit=" g/s" accent="#a78bfa" stale={stale} />
+          <HorizontalMeter label="Intake air" value={data.intakeTempC} min={-20} max={80} unit="C" accent="#fbbf24" stale={stale} />
+          <HorizontalMeter label="Engine load / torque" value={data.engineLoadPercent ?? data.actualTorquePercent} min={0} max={100} unit="%" accent="#fb7185" stale={stale} />
+          <div className="grid grid-cols-2 gap-3">
+            <VehicleStatusCard label="Ambient" value={data.ambientTempC == null ? "--" : `${data.ambientTempC}C`} sub="optional PID" tone={stale ? "amber" : "cyan"} />
+            <VehicleStatusCard label="Supported PIDs" value={snapshot?.supportedPids?.length ?? 0} sub={(snapshot?.supportedPids || []).slice(0, 6).join(", ")} />
+          </div>
+        </div>
+
+        <div className="grid grid-rows-[auto_1fr] gap-3">
+          <div className="grid grid-cols-2 gap-2">
+            <VehicleStatusCard label="OBD state" value={state} sub={snapshot?.polling ? "polling active" : "polling stopped"} tone={stale ? "amber" : snapshot?.connected ? "cyan" : "rose"} />
+            <VehicleStatusCard label="Adapter" value={snapshot?.adapterName || "--"} sub={snapshot?.adapterDescription || "--"} />
+            <VehicleStatusCard label="Protocol" value={snapshot?.elmProtocol ? `ELM ${snapshot.elmProtocol}` : "--"} sub={snapshot?.protocol || "--"} />
+            <VehicleStatusCard label="Errors" value={Object.values(snapshot?.pidErrorCounts || {}).reduce((sum, count) => sum + count, 0)} sub={snapshot?.lastError || "none"} tone={snapshot?.lastError ? "amber" : "cyan"} />
+          </div>
+          <div className="grid grid-rows-4 gap-2">
+            <SparklineStrip label="RPM trend" values={history.rpm} accent="#22d3ee" stale={stale} />
+            <SparklineStrip label="Speed trend" values={history.speedKph} accent="#60a5fa" stale={stale} />
+            <SparklineStrip label="Coolant trend" values={history.coolantTempC} accent="#34d399" stale={stale} />
+            <SparklineStrip label="Voltage trend" values={history.moduleVoltage} accent="#fbbf24" stale={stale} />
+          </div>
+        </div>
+      </div>
+
+      {!snapshot?.connected && <div className="rounded-2xl border border-amber-200/20 bg-amber-300/10 px-4 py-2 text-xs font-bold text-amber-100">No live vehicle data. Connect vLinker from Settings &gt; Ford OBD / vLinker.</div>}
     </div>
   );
 }
@@ -1379,6 +1478,8 @@ export default function CampervanHMI() {
 
   const view = useMemo(() => {
     switch (activeTab) {
+      case "vehicle":
+        return <VehicleDashboardView />;
       case "power":
         return <PowerView state={state} setters={setters} openEnergyStats={() => setShowEnergyStats(true)} />;
       case "climate":

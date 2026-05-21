@@ -529,6 +529,13 @@ class CamperAgentBridge(context: Context) {
         val stale = obdConnected && lastObdSuccessEpochMs > 0 && now - lastObdSuccessEpochMs > 10_000
         val errors = JSONObject()
         pidErrorCounts.toSortedMap().forEach { (pid, count) -> errors.put(pid, count) }
+        val telemetry = obdRepository.telemetryJson()
+            .put("oilTempC", JSONObject.NULL)
+            .put("outsideTempC", obdRepository.telemetryJson().opt("ambientTempC"))
+            .put("engineLoadPercent", JSONObject.NULL)
+            .put("boostBar", JSONObject.NULL)
+            .put("egtTempC", JSONObject.NULL)
+            .put("dpfSootPercent", JSONObject.NULL)
         return usbSerialManager.statusJson()
             .put("state", if (obdConnected) obdState else usbSerialManager.status.value.state.name)
             .put("connected", obdConnected)
@@ -543,7 +550,7 @@ class CamperAgentBridge(context: Context) {
             .put("elmProtocol", "6")
             .put("supportedPids", obdRepository.telemetryJson().optJSONArray("supportedPids") ?: JSONArray())
             .put("pidErrorCounts", errors)
-            .put("telemetry", obdRepository.telemetryJson())
+            .put("telemetry", telemetry)
     }
 
     private fun obdConnectedJson(message: String, lastTx: String, lastRx: String): JSONObject = JSONObject()

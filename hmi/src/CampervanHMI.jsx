@@ -48,16 +48,16 @@ import {
   YAxis,
 } from "recharts";
 import { camperAgentBridge } from "./integrations/camperAgentBridge";
-import { CircularGauge as VehicleCircularGauge } from "./components/vehicle/CircularGauge";
-import { SemiGauge } from "./components/vehicle/SemiGauge";
-import { HorizontalMeter } from "./components/vehicle/HorizontalMeter";
-import { VehicleStatusCard } from "./components/vehicle/VehicleStatusCard";
-import { SparklineStrip } from "./components/vehicle/SparklineStrip";
+import { FuturisticGauge } from "./components/vehicle/FuturisticGauge";
+import { VehicleTempCard } from "./components/vehicle/VehicleTempCard";
+import { VehicleBottomNav } from "./components/vehicle/VehicleBottomNav";
+import { EngineDetailsView } from "./components/vehicle/EngineDetailsView";
 
 // Clean Ford Transit campervan background only. Do not use a full GUI mockup here.
 const VAN_BACKGROUND_URL = "assets/ford-transit-clean-bg.png";
 const DESIGN_WIDTH = 1080;
 const DESIGN_HEIGHT = 600;
+const MEDIA_UNIT_SAFE_HEIGHT = 560;
 
 const DEFAULT_BMS = {
   profile: { displayName: "PUPVWMHB 12V 320Ah LiFePO4 250A BMS", capacityAh: 320, nominalVoltage: 12.8, bmsContinuousCurrentAmp: 250 },
@@ -383,98 +383,78 @@ function HomeView({ state, setters, openEnergyStats }) {
 }
 
 function VehicleDashboardView() {
+  const [page, setPage] = useState("dashboard");
   const [snapshot, setSnapshot] = useState(null);
-  const [history, setHistory] = useState({ rpm: [], speedKph: [], coolantTempC: [], moduleVoltage: [] });
+  const [time, setTime] = useState(() => new Date());
   const data = snapshot?.telemetry || {};
+  const status = snapshot?.stale ? "STALE" : snapshot?.state === "Reconnecting" ? "RECONNECTING" : snapshot?.connected && snapshot?.polling ? "LIVE" : "OFFLINE";
   const stale = Boolean(snapshot?.stale);
-  const state = snapshot?.state || (snapshot?.connected ? "ObdConnected" : "Disconnected");
-  const lastAge = snapshot?.lastSuccessEpochMs ? Math.max(0, Math.round((Date.now() - snapshot.lastSuccessEpochMs) / 1000)) : null;
-  const engineRunning = Number(data.rpm || 0) > 0;
+  const isSimulated = data.source === "simulator" || snapshot?.source === "simulator";
+  const oilValue = Number.isFinite(data.oilTempC) ? data.oilTempC : (isSimulated ? 92 : null);
+  const outsideValue = Number.isFinite(data.outsideTempC) ? data.outsideTempC : Number.isFinite(data.ambientTempC) ? data.ambientTempC : null;
+  const gear = Number.isFinite(data.speedKph) && Number.isFinite(data.rpm) && data.speedKph > 2 && data.rpm > 600 ? "D?" : "LIVE";
 
   useEffect(() => {
     let active = true;
     async function load() {
       const result = await camperAgentBridge.getVehicleTelemetrySnapshot();
-      if (!active) return;
-      const next = result.ok ? result.data : null;
-      if (next) {
-        setSnapshot(next);
-        const telemetry = next.telemetry || {};
-        setHistory((current) => ({
-          rpm: [...current.rpm, telemetry.rpm].slice(-60),
-          speedKph: [...current.speedKph, telemetry.speedKph].slice(-60),
-          coolantTempC: [...current.coolantTempC, telemetry.coolantTempC].slice(-60),
-          moduleVoltage: [...current.moduleVoltage, telemetry.moduleVoltage].slice(-60),
-        }));
-      }
+      if (active && result.ok) setSnapshot(result.data);
     }
     load();
-    const timer = setInterval(load, 750);
+    const timer = setInterval(load, 500);
     return () => { active = false; clearInterval(timer); };
   }, []);
 
+  useEffect(() => {
+    const timer = setInterval(() => setTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const timeText = time.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const statusClass = status === "LIVE" ? "border-cyan-300/50 bg-cyan-400/15 text-cyan-100" : status === "STALE" || status === "RECONNECTING" ? "border-amber-300/45 bg-amber-400/15 text-amber-100" : "border-rose-300/45 bg-rose-400/15 text-rose-100";
+
   return (
-    <div className="grid h-full grid-rows-[64px_auto_1fr_auto] gap-3">
-      <div className="flex items-center justify-between rounded-3xl border border-white/10 bg-white/[0.055] px-5 backdrop-blur-xl">
-        <div>
-          <div className="text-2xl font-black text-white">Vehicle Dashboard</div>
-          <div className="text-xs text-slate-400">{snapshot?.protocol || "ISO15765-4 CAN11/500"} · {snapshot?.adapterName || "vLinker / ELM327 v2.3"}</div>
+    <div className="relative h-full overflow-hidden bg-[#020817] text-white">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_34%,rgba(14,165,233,0.15),transparent_32%),linear-gradient(180deg,rgba(2,6,23,0.3),#020617)]" />
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-44 bg-[linear-gradient(rgba(14,165,233,0.10)_1px,transparent_1px),linear-gradient(90deg,rgba(14,165,233,0.10)_1px,transparent_1px)] bg-[size:42px_24px] opacity-40 [transform:perspective(260px)_rotateX(58deg)]" />
+      <div className="relative grid h-full grid-rows-[58px_1fr_76px] gap-2 p-3">
+        <div className="grid grid-cols-[300px_1fr_300px] items-center border-b border-cyan-300/35 bg-slate-950/55 px-4 shadow-lg shadow-cyan-500/10 [clip-path:polygon(0_0,100%_0,100%_78%,84%_78%,83%_100%,17%_100%,16%_78%,0_78%)]">
+          <div className="flex items-center gap-4">
+            <div className="rounded-full border border-cyan-300/60 px-4 py-1 font-serif text-2xl italic text-white shadow-lg shadow-cyan-400/20">Ford</div>
+            <div className="text-2xl font-black uppercase tracking-[0.16em] text-white">Vehicle Dashboard</div>
+            <div className={`rounded-xl border px-3 py-1 text-xs font-black ${statusClass}`}>? {status}</div>
+          </div>
+          <div className="text-center text-lg font-black uppercase tracking-[0.18em] text-cyan-300">Ford Transit Campervan</div>
+          <div className="flex items-center justify-end gap-8">
+            <div className="text-right text-xs font-bold leading-5 text-slate-300"><div>{snapshot?.adapterName || "vLinker FS"}</div><div>{snapshot?.protocol || "ISO 15765-4 CAN 11/500"}</div></div>
+            <div className="min-w-[92px] text-right text-4xl font-black text-white">{timeText}</div>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <StatusBadge value={stale ? "Stale" : snapshot?.polling ? "Polling" : state} />
-          <div className="rounded-full border border-white/10 bg-black/25 px-3 py-1 text-xs font-bold text-slate-300">{lastAge == null ? "No live vehicle data" : stale ? `Last update ${lastAge}s ago` : "Live"}</div>
-        </div>
+
+        {page === "dashboard" && (
+          <div className="grid min-h-0 grid-cols-[1fr_250px_1fr] grid-rows-[1fr_124px] gap-3">
+            <div className="row-span-2"><FuturisticGauge label="RPM" value={Number.isFinite(data.rpm) ? data.rpm / 1000 : null} min={0} max={5} unit="x1000" marks={[0, 1, 2, 3, 4, 5]} redFrom={4} formatter={() => Math.round(data.rpm).toLocaleString("sv-SE")} accent="#20c8ff" stale={stale} /></div>
+            <div className="flex flex-col items-center justify-center border border-cyan-300/30 bg-slate-950/70 shadow-xl shadow-cyan-500/10 [clip-path:polygon(12%_0,88%_0,100%_12%,100%_88%,88%_100%,12%_100%,0_88%,0_12%)]">
+              <div className="text-sm font-black uppercase tracking-[0.2em] text-cyan-300">Gear</div>
+              <div className="mt-1 text-5xl font-black text-white">{gear}</div>
+              <div className="mt-6 h-28 w-36 rounded-t-[3rem] border border-cyan-300/40 border-b-cyan-300/10 bg-[radial-gradient(circle_at_50%_70%,rgba(34,211,238,0.22),transparent_42%)]" />
+              <div className="mt-2 text-xs font-bold uppercase tracking-[0.18em] text-cyan-200">Transit</div>
+            </div>
+            <div className="row-span-2"><FuturisticGauge label="km/h" value={data.speedKph} min={0} max={200} unit="km/h" marks={[0,20,40,60,80,100,120,140,160,180,200]} redFrom={170} formatter={(v) => Math.round(v)} accent="#20c8ff" stale={stale} /></div>
+            <VehicleTempCard label="Coolant Temp" value={data.coolantTempC} min={40} max={120} warning={100} icon="?" stale={stale} />
+            <VehicleTempCard label="Oil Temp" value={oilValue} min={40} max={130} warning={115} icon="?" subtext={oilValue == null ? "Not available" : undefined} simulated={isSimulated && oilValue != null} stale={stale} />
+            <VehicleTempCard label="Outside Temp" value={outsideValue} min={-30} max={50} warning={45} icon="?" subtext={outsideValue == null ? "Not available" : undefined} stale={stale} />
+          </div>
+        )}
+
+        {page === "engine" && <EngineDetailsView snapshot={snapshot} />}
+        {page !== "dashboard" && page !== "engine" && <div className="flex items-center justify-center border border-cyan-300/30 bg-slate-950/70 text-2xl font-black uppercase tracking-[0.18em] text-cyan-200 [clip-path:polygon(4%_0,96%_0,100%_12%,100%_88%,96%_100%,4%_100%,0_88%,0_12%)]">{page} page pending</div>}
+
+        <VehicleBottomNav active={page} setActive={setPage} />
       </div>
-
-      <div className="grid grid-cols-6 gap-2">
-        {[["RPM", data.rpm, ""], ["Speed", data.speedKph, "km/h"], ["Coolant", data.coolantTempC, "C"], ["Voltage", data.moduleVoltage, "V"], ["Throttle", data.throttlePercent, "%"], [engineRunning ? "Engine running" : "Engine off", stale ? "Stale" : "Live", ""]].map(([label, value, unit]) => (
-          <div key={label} className="rounded-2xl border border-white/10 bg-black/25 p-3">
-            <div className="text-[10px] font-black uppercase tracking-[0.16em] text-slate-500">{label}</div>
-            <div className="mt-1 text-lg font-black text-white">{value ?? "--"}<span className="ml-1 text-xs text-slate-400">{unit}</span></div>
-          </div>
-        ))}
-      </div>
-
-      <div className="grid min-h-0 grid-cols-[1.25fr_1fr_0.9fr] gap-3">
-        <div className="grid grid-cols-2 gap-3">
-          <VehicleCircularGauge label="RPM" value={data.rpm} min={0} max={5000} unit="rpm" warningThreshold={3600} dangerThreshold={4400} accent="#22d3ee" stale={stale} />
-          <VehicleCircularGauge label="Speed" value={data.speedKph} min={0} max={160} unit="km/h" warningThreshold={120} dangerThreshold={145} accent="#60a5fa" stale={stale} />
-          <SemiGauge label="Coolant" value={data.coolantTempC} min={0} max={120} unit="C" stale={stale} />
-          <VehicleCircularGauge label="Voltage" value={data.moduleVoltage} min={11.5} max={15.5} unit="V" warningThreshold={15} dangerThreshold={15.4} accent="#34d399" stale={stale} />
-        </div>
-
-        <div className="space-y-3">
-          <HorizontalMeter label="Throttle" value={data.throttlePercent} min={0} max={100} unit="%" accent="#38bdf8" stale={stale} />
-          <HorizontalMeter label="MAF" value={data.mafGps} min={0} max={120} unit=" g/s" accent="#a78bfa" stale={stale} />
-          <HorizontalMeter label="Intake air" value={data.intakeTempC} min={-20} max={80} unit="C" accent="#fbbf24" stale={stale} />
-          <HorizontalMeter label="Engine load / torque" value={data.engineLoadPercent ?? data.actualTorquePercent} min={0} max={100} unit="%" accent="#fb7185" stale={stale} />
-          <div className="grid grid-cols-2 gap-3">
-            <VehicleStatusCard label="Ambient" value={data.ambientTempC == null ? "--" : `${data.ambientTempC}C`} sub="optional PID" tone={stale ? "amber" : "cyan"} />
-            <VehicleStatusCard label="Supported PIDs" value={snapshot?.supportedPids?.length ?? 0} sub={(snapshot?.supportedPids || []).slice(0, 6).join(", ")} />
-          </div>
-        </div>
-
-        <div className="grid grid-rows-[auto_1fr] gap-3">
-          <div className="grid grid-cols-2 gap-2">
-            <VehicleStatusCard label="OBD state" value={state} sub={snapshot?.polling ? "polling active" : "polling stopped"} tone={stale ? "amber" : snapshot?.connected ? "cyan" : "rose"} />
-            <VehicleStatusCard label="Adapter" value={snapshot?.adapterName || "--"} sub={snapshot?.adapterDescription || "--"} />
-            <VehicleStatusCard label="Protocol" value={snapshot?.elmProtocol ? `ELM ${snapshot.elmProtocol}` : "--"} sub={snapshot?.protocol || "--"} />
-            <VehicleStatusCard label="Errors" value={Object.values(snapshot?.pidErrorCounts || {}).reduce((sum, count) => sum + count, 0)} sub={snapshot?.lastError || "none"} tone={snapshot?.lastError ? "amber" : "cyan"} />
-          </div>
-          <div className="grid grid-rows-4 gap-2">
-            <SparklineStrip label="RPM trend" values={history.rpm} accent="#22d3ee" stale={stale} />
-            <SparklineStrip label="Speed trend" values={history.speedKph} accent="#60a5fa" stale={stale} />
-            <SparklineStrip label="Coolant trend" values={history.coolantTempC} accent="#34d399" stale={stale} />
-            <SparklineStrip label="Voltage trend" values={history.moduleVoltage} accent="#fbbf24" stale={stale} />
-          </div>
-        </div>
-      </div>
-
-      {!snapshot?.connected && <div className="rounded-2xl border border-amber-200/20 bg-amber-300/10 px-4 py-2 text-xs font-bold text-amber-100">No live vehicle data. Connect vLinker from Settings &gt; Ford OBD / vLinker.</div>}
     </div>
   );
 }
-
 function PowerView({ state, setters, openEnergyStats }) {
   const bms = state.batteryBms?.telemetry ?? {};
   const batterySoc = Math.round(bms.socPercent ?? state.battery);
@@ -1419,10 +1399,18 @@ export default function CampervanHMI() {
   const [remote, setRemote] = useState(true);
 
   useEffect(() => {
-    const updateScale = () => setHmiScale(Math.min(window.innerWidth / DESIGN_WIDTH, window.innerHeight / DESIGN_HEIGHT, 1));
+    const updateScale = () => {
+      const availableWidth = window.innerWidth;
+      const availableHeight = Math.min(window.innerHeight, MEDIA_UNIT_SAFE_HEIGHT);
+      setHmiScale(Math.min(availableWidth / DESIGN_WIDTH, availableHeight / DESIGN_HEIGHT, 1));
+    };
     updateScale();
     window.addEventListener("resize", updateScale);
-    return () => window.removeEventListener("resize", updateScale);
+    window.addEventListener("orientationchange", updateScale);
+    return () => {
+      window.removeEventListener("resize", updateScale);
+      window.removeEventListener("orientationchange", updateScale);
+    };
   }, []);
 
   const state = {
@@ -1496,8 +1484,8 @@ export default function CampervanHMI() {
   }, [activeTab, state, setters]);
 
   return (
-    <div className="flex h-screen w-screen items-center justify-center overflow-hidden bg-slate-950 text-slate-100">
-      <div style={{ width: DESIGN_WIDTH, height: DESIGN_HEIGHT, transform: `scale(${hmiScale})`, transformOrigin: "center center" }} className="relative overflow-hidden rounded-[2.25rem] border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.16),transparent_30%),radial-gradient(circle_at_bottom_right,rgba(168,85,247,0.18),transparent_35%),linear-gradient(135deg,#020617,#0f172a_45%,#020617)] shadow-2xl shadow-black">
+    <div className="flex h-screen w-screen items-start justify-center overflow-hidden bg-slate-950 text-slate-100">
+      <div style={{ width: DESIGN_WIDTH, height: DESIGN_HEIGHT, transform: `scale(${hmiScale})`, transformOrigin: "top center" }} className="relative overflow-hidden rounded-[2.25rem] border border-white/10 bg-[radial-gradient(circle_at_top_left,rgba(34,211,238,0.16),transparent_30%),radial-gradient(circle_at_bottom_right,rgba(168,85,247,0.18),transparent_35%),linear-gradient(135deg,#020617,#0f172a_45%,#020617)] shadow-2xl shadow-black">
         <div
           className="pointer-events-none absolute inset-0 bg-cover bg-center opacity-70"
           style={{ backgroundImage: `url(${VAN_BACKGROUND_URL})` }}
@@ -1506,10 +1494,10 @@ export default function CampervanHMI() {
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-slate-950/45 via-transparent to-slate-950/80" />
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_58%_28%,rgba(14,165,233,0.08),transparent_28%),radial-gradient(circle_at_18%_35%,rgba(0,0,0,0.28),transparent_34%)]" />
         <div className="relative z-10 h-full">
-        <TopBar activeScene={activeScene} setActiveScene={setActiveScene} />
-        <div className="flex h-[526px] border-t border-white/10">
+        {activeTab !== "vehicle" && <TopBar activeScene={activeScene} setActiveScene={setActiveScene} />}
+        <div className={cx("flex border-t border-white/10", activeTab === "vehicle" ? "h-full" : "h-[526px]")}>
           <SideNav activeTab={activeTab} setActiveTab={setActiveTab} />
-          <main className="h-full flex-1 p-4">
+          <main className={cx("h-full flex-1", activeTab === "vehicle" ? "p-2" : "p-4")}>
             <AnimatePresence mode="wait">
               <motion.div
                 key={activeTab}

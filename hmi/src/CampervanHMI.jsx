@@ -1054,6 +1054,67 @@ function RemoteLoggingSettingsModal({ onClose }) {
   );
 }
 
+function Tcan485GatewayModal({ onClose }) {
+  const [networkMode, setNetworkMode] = useState("Android Hotspot");
+  const [ssid, setSsid] = useState("");
+  const [password, setPassword] = useState("");
+  const [manualUrl, setManualUrl] = useState("http://camper-tcan485.local");
+  const [status, setStatus] = useState("Idle");
+  const [beacon, setBeacon] = useState(null);
+  const discoveredUrl = beacon?.baseUrl || (beacon?.ip ? `http://${beacon.ip}` : "");
+  async function startDiscovery() {
+    const result = await camperAgentBridge.startTcan485Discovery();
+    setStatus(result.ok ? "Listening on UDP 47887" : "Error");
+    if (result.data?.beacon && typeof result.data.beacon === "object") setBeacon(result.data.beacon);
+  }
+  async function refreshDiscovery() {
+    const result = await camperAgentBridge.getTcan485DiscoverySnapshot();
+    setStatus(result.ok && result.data?.discoveryRunning ? "Listening on UDP 47887" : "Stopped");
+    if (result.data?.beacon && typeof result.data.beacon === "object") setBeacon(result.data.beacon);
+  }
+  async function testConnection() {
+    const baseUrl = discoveredUrl || manualUrl || "http://192.168.4.1";
+    const result = await camperAgentBridge.testTcan485Health(baseUrl);
+    setStatus(result.ok ? `Health OK: ${baseUrl}` : result.error || "Health check failed");
+  }
+  return (
+    <ModalShell title="T-CAN485 Gateway" subtitle="Android hotspot, UDP discovery, RS485 BMS gateway" icon={Wifi} onClose={onClose}>
+      <div className="grid h-full grid-cols-[330px_1fr] gap-4">
+        <div className="space-y-3">
+          <SettingField label="Network mode"><select value={networkMode} onChange={(e) => setNetworkMode(e.target.value)} className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option>Van Router</option><option>Android Hotspot</option><option>LilyGO Setup AP</option></select></SettingField>
+          <SettingField label="Hotspot SSID"><input value={ssid} onChange={(e) => setSsid(e.target.value)} placeholder="Android hotspot SSID" className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white outline-none" /></SettingField>
+          <SettingField label="Hotspot password"><input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="Not logged or uploaded" className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white outline-none" /></SettingField>
+          <SettingField label="Manual base URL"><input value={manualUrl} onChange={(e) => setManualUrl(e.target.value)} className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white outline-none" /></SettingField>
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick={() => camperAgentBridge.openAndroidHotspotSettings().then(() => setStatus("Open Android hotspot settings manually"))} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Open hotspot settings</button>
+            <button onClick={testConnection} className="rounded-2xl bg-cyan-300 px-3 py-2 text-xs font-black text-slate-950">Test connection</button>
+            <button onClick={startDiscovery} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Start discovery</button>
+            <button onClick={() => camperAgentBridge.stopTcan485Discovery().then(() => setStatus("Stopped"))} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Stop discovery</button>
+          </div>
+          <button onClick={refreshDiscovery} className="w-full rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Refresh discovery</button>
+          <div className="rounded-2xl border border-white/10 bg-black/20 p-3 text-xs text-slate-200">{status}</div>
+        </div>
+        <div className="grid grid-rows-[auto_1fr] gap-4">
+          <div className="grid grid-cols-3 gap-3">
+            {[["Android Hotspot Mode", "Use this if the head unit has SIM/4G/USB/Ethernet internet. LilyGO joins Android's hotspot and the app keeps internet."], ["Van Router Mode", "Best mode. Android and LilyGO join the same router."], ["Setup AP Mode", "Only for first setup. Android may lose internet while connected directly to LilyGO."]].map(([title, text]) => <div key={title} className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="text-sm font-black text-white">{title}</div><div className="mt-3 text-xs text-slate-300">{text}</div></div>)}
+          </div>
+          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4">
+            <div className="mb-3 flex items-center justify-between"><span className="font-black text-white">Discovery</span><StatusBadge value={beacon ? "Candidate found" : "Waiting"} /></div>
+            <div className="rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-xs text-amber-100">Android hotspot keeps internet only if Android has non-Wi-Fi upstream internet. Enable hotspot manually, then press Discover LilyGO.</div>
+            <div className="mt-4 grid grid-cols-2 gap-3 text-xs text-slate-300">
+              <div className="rounded-xl bg-black/20 p-3">Discovered IP: <span className="font-black text-white">{beacon?.ip || "--"}</span></div>
+              <div className="rounded-xl bg-black/20 p-3">Candidate: <span className="font-black text-white">{discoveredUrl || "--"}</span></div>
+              <div className="rounded-xl bg-black/20 p-3">Hostname: <span className="font-black text-white">{beacon?.hostname || "camper-tcan485"}</span></div>
+              <div className="rounded-xl bg-black/20 p-3">Profile: <span className="font-black text-white">{beacon?.profile || "battery_bms"}</span></div>
+            </div>
+            <div className="mt-4 rounded-2xl bg-black/25 p-3 font-mono text-[11px] text-slate-300">Fallback URLs: http://camper-tcan485.local, http://192.168.4.1, discovered UDP IP</div>
+          </div>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
+
 function BatteryBmsSettingsModal({ onClose }) {
   const [tab, setTab] = useState("Overview");
   const [canStatus, setCanStatus] = useState("Passive listen ready");
@@ -1138,6 +1199,7 @@ function SystemsView({ state, setters, openIntegrationSettings }) {
             ["CAN Bus Scanner", "Ford OBD, NMEA 2000, BMS-CAN profiles", "canbus"],
             ["Remote Logging / Cloudflare", "Live logs, diagnostics upload, tunnel status", "remoteLogging"],
             ["Battery / BMS", "12V 320Ah LiFePO4, 250A BMS, Bluetooth + CAN", "battery"],
+            ["T-CAN485 Gateway", "Android hotspot, UDP discovery, RS485 BMS gateway", "tcan485"],
             ["Power Integrations", "SmartSolar, Renogy 40A, Orion-Tr, shore charging"],
             ["Victron System", "SmartSolar MPPT 100/20 and Orion-Tr 12/12V 18A", "victron"],
             ["Renogy DC/DC", "40A alternator battery charger"],
@@ -1305,6 +1367,7 @@ export default function CampervanHMI() {
           {integrationModal === "battery" && <BatteryBmsSettingsModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "canbus" && <CanBusScannerModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "remoteLogging" && <RemoteLoggingSettingsModal onClose={() => setIntegrationModal(null)} />}
+          {integrationModal === "tcan485" && <Tcan485GatewayModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "victron" && <VictronSettingsModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "garmin" && <GarminSettingsModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "obd" && <ObdSettingsModal onClose={() => setIntegrationModal(null)} />}

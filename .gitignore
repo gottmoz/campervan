@@ -25,6 +25,7 @@ hmi/node_modules/
 hmi/dist/
 hmi/dev-server.log
 app/src/main/assets/hmi/
+firmware/*/.pio/
 
 external/
 tools/bin/

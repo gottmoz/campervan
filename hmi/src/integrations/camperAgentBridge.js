@@ -66,6 +66,14 @@ const simulator = {
   scanNmeaBus: () => ({ state: "Simulated", pgnCount: 3, readOnly: true }),
   exportIntegrationDiagnostics: () => ({ exportedAt: new Date().toISOString(), mode: "simulated" }),
   getRemoteLoggingSettings: () => ({ enabled: true, serverUrl: simulator.remoteUrl }),
+  startTcan485Discovery: () => ({ state: "Listening", discoveryRunning: true, port: 47887, beacon: null, fallbackUrls: ["http://camper-tcan485.local", "http://192.168.4.1"], readOnly: true }),
+  stopTcan485Discovery: () => ({ state: "Stopped", discoveryRunning: false, port: 47887, beacon: null, readOnly: true }),
+  getTcan485DiscoverySnapshot: () => ({ discoveryRunning: false, port: 47887, beacon: null, fallbackUrls: ["http://camper-tcan485.local", "http://192.168.4.1"], readOnly: true }),
+  testTcan485Health: async (baseUrl) => {
+    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/health`);
+    return { baseUrl, health: await response.json(), readOnly: true };
+  },
+  openAndroidHotspotSettings: () => ({ opened: false, target: "Android settings unavailable in desktop mode" }),
   saveRemoteLoggingSettings: (json) => {
     simulator.remoteUrl = json.serverUrl || simulator.remoteUrl;
     return { enabled: json.enabled !== false, serverUrl: simulator.remoteUrl };
@@ -153,6 +161,11 @@ export const camperAgentBridge = {
   scanNmeaBus: () => call("scanNmeaBus"),
   exportIntegrationDiagnostics: () => call("exportIntegrationDiagnostics"),
   getRemoteLoggingSettings: () => call("getRemoteLoggingSettings"),
+  startTcan485Discovery: () => call("startTcan485Discovery"),
+  stopTcan485Discovery: () => call("stopTcan485Discovery"),
+  getTcan485DiscoverySnapshot: () => call("getTcan485DiscoverySnapshot"),
+  testTcan485Health: (baseUrl) => call("testTcan485Health", baseUrl),
+  openAndroidHotspotSettings: () => call("openAndroidHotspotSettings"),
   saveRemoteLoggingSettings: (settings) => call("saveRemoteLoggingSettings", settings),
   testRemoteLoggingServer: () => call("testRemoteLoggingServer"),
   uploadDiagnosticsNow: () => call("uploadDiagnosticsNow"),

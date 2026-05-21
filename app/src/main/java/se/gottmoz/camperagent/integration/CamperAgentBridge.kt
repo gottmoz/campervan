@@ -1,7 +1,9 @@
 package se.gottmoz.camperagent.integration
 
 import android.content.Context
+import android.content.Intent
 import android.os.Build
+import android.provider.Settings
 import android.webkit.JavascriptInterface
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
@@ -14,6 +16,10 @@ import se.gottmoz.camperagent.integration.obd.ObdRepository
 import se.gottmoz.camperagent.integration.obd.ObdResponseParser
 import se.gottmoz.camperagent.integration.usbserial.UsbSerialManager
 import java.io.File
+import java.net.DatagramSocket
+import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
+import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -29,6 +35,8 @@ class CamperAgentBridge(context: Context) {
     private val obdRepository = ObdRepository()
     @Volatile private var obdPolling = false
     @Volatile private var obdConnected = false
+    @Volatile private var tcanDiscoveryRunning = false
+    @Volatile private var tcanLastBeacon: JSONObject? = null
 
     @JavascriptInterface fun getIntegrationSnapshot(): String = ok(repository.snapshot())
     @JavascriptInterface fun getBatteryBmsSnapshot(): String = ok(repository.batteryBmsSnapshot())
@@ -37,6 +45,31 @@ class CamperAgentBridge(context: Context) {
     @JavascriptInterface fun getGarminSettings(): String = ok(settingsStore.getGarminSettings())
     @JavascriptInterface fun getObdSettings(): String = ok(settingsStore.getObdSettings())
     @JavascriptInterface fun getRemoteLoggingSettings(): String = ok(remoteLogUploader.settings())
+    @JavascriptInterface fun startTcan485Discovery(): String = handle {
+        if (!tcanDiscoveryRunning) startTcanDiscoveryThread()
+        tcanSnapshot().put("state", "Listening")
+    }
+    @JavascriptInterface fun stopTcan485Discovery(): String = handle {
+        tcanDiscoveryRunning = false
+        tcanSnapshot().put("state", "Stopped")
+    }
+    @JavascriptInterface fun getTcan485DiscoverySnapshot(): String = ok(tcanSnapshot())
+    @JavascriptInterface fun testTcan485Health(baseUrl: String): String = handle {
+        val normalized = normalizeHttpUrl(baseUrl)
+        require(normalized.length <= 256) { "T-CAN485 URL too long" }
+        val body = httpGet("$normalized/health")
+        JSONObject().put("baseUrl", normalized).put("health", body).put("readOnly", true)
+    }
+    @JavascriptInterface fun openAndroidHotspotSettings(): String = handle {
+        val intent = Intent(Settings.ACTION_WIRELESS_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+        runCatching { appContext.startActivity(intent) }
+            .recoverCatching {
+                appContext.startActivity(Intent(Settings.ACTION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            }
+        JSONObject().put("opened", true).put("target", "Android wireless settings")
+    }
 
     @JavascriptInterface fun saveRemoteLoggingSettings(json: String): String = handle {
         val parsed = validatedJson(json)
@@ -446,5 +479,70 @@ class CamperAgentBridge(context: Context) {
     private fun isBlockedObdCommand(command: String): Boolean {
         val service = command.take(2)
         return service in setOf("04", "14", "2E", "10", "27", "28", "2F", "31", "3D", "85")
+    }
+
+    private fun startTcanDiscoveryThread() {
+        tcanDiscoveryRunning = true
+        Thread {
+            DatagramSocket(TCAN_DISCOVERY_PORT).use { socket ->
+                socket.broadcast = true
+                socket.soTimeout = 2_000
+                val buffer = ByteArray(4096)
+                while (tcanDiscoveryRunning) {
+                    val packet = java.net.DatagramPacket(buffer, buffer.size)
+                    try {
+                        socket.receive(packet)
+                        val text = String(packet.data, packet.offset, packet.length, Charsets.UTF_8)
+                        val json = runCatching { JSONObject(text) }.getOrNull() ?: continue
+                        if (json.optString("type") == "camper_tcan485_hello") {
+                            val remoteAddress = packet.address.hostAddress ?: ""
+                            tcanLastBeacon = json
+                                .put("remoteAddress", remoteAddress)
+                                .put("baseUrl", "http://${json.optString("ip", remoteAddress)}")
+                                .put("password", "[redacted]")
+                        }
+                    } catch (_: SocketTimeoutException) {
+                        // Keep listening until the user stops discovery.
+                    }
+                }
+            }
+        }.apply {
+            name = "CamperTcan485Discovery"
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun tcanSnapshot(): JSONObject = JSONObject()
+        .put("discoveryRunning", tcanDiscoveryRunning)
+        .put("port", TCAN_DISCOVERY_PORT)
+        .put("beacon", tcanLastBeacon ?: JSONObject.NULL)
+        .put("fallbackUrls", JSONArray(listOf("http://camper-tcan485.local", "http://192.168.4.1")))
+        .put("readOnly", true)
+
+    private fun httpGet(url: String): JSONObject {
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 3_000
+            readTimeout = 5_000
+            setRequestProperty("Accept", "application/json")
+        }
+        val body = runCatching {
+            val stream = if (connection.responseCode in 200..299) connection.inputStream else connection.errorStream
+            stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+        }.getOrDefault("")
+        return runCatching { JSONObject(body) }.getOrElse {
+            JSONObject().put("ok", connection.responseCode in 200..299).put("raw", body)
+        }
+    }
+
+    private fun normalizeHttpUrl(url: String): String {
+        val trimmed = url.trim().trimEnd('/')
+        require(trimmed.startsWith("http://") || trimmed.startsWith("https://")) { "URL must start with http:// or https://" }
+        return trimmed
+    }
+
+    companion object {
+        private const val TCAN_DISCOVERY_PORT = 47887
     }
 }

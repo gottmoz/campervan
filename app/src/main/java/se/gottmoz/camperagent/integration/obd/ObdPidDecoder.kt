@@ -6,13 +6,14 @@ object ObdPidDecoder {
     fun temperature(a: Int): Int = a - 40
     fun maf(a: Int, b: Int): Double = ((a * 256) + b) / 100.0
     fun throttle(a: Int): Double = a * 100.0 / 255.0
+    fun moduleVoltage(a: Int, b: Int): Double = ((a * 256) + b) / 1000.0
     fun torquePercent(a: Int): Int = a - 125
     fun referenceTorqueNm(a: Int, b: Int): Int = a * 256 + b
 
     fun decodeSupportedPids(response: String, basePid: Int): Set<String> {
-        val bytes = responseBytes(response)
-        if (bytes.size < 6 || bytes[0] != 0x41) return emptySet()
-        val mask = bytes.drop(2).take(4)
+        val parsed = ObdResponseParser.parseMode01(response) ?: return emptySet()
+        if (parsed.pid != "%02X".format(basePid) || parsed.dataBytes.size < 4) return emptySet()
+        val mask = parsed.dataBytes.take(4)
         val supported = mutableSetOf<String>()
         mask.forEachIndexed { byteIndex, value ->
             for (bit in 0..7) {
@@ -25,9 +26,8 @@ object ObdPidDecoder {
     }
 
     fun decodeTelemetry(pid: String, response: String): ObdTelemetry {
-        val bytes = responseBytes(response)
-        if (bytes.size < 3 || bytes[0] != 0x41) return ObdTelemetry()
-        val data = bytes.drop(2)
+        val parsed = ObdResponseParser.parseMode01(response) ?: return ObdTelemetry()
+        val data = parsed.dataBytes
         return when (pid.uppercase()) {
             "0C" -> if (data.size >= 2) ObdTelemetry(rpm = rpm(data[0], data[1])) else ObdTelemetry()
             "0D" -> ObdTelemetry(speedKph = speed(data[0]))
@@ -35,6 +35,7 @@ object ObdPidDecoder {
             "0F" -> ObdTelemetry(intakeTempC = temperature(data[0]))
             "10" -> if (data.size >= 2) ObdTelemetry(mafGps = maf(data[0], data[1])) else ObdTelemetry()
             "11" -> ObdTelemetry(throttlePercent = throttle(data[0]))
+            "42" -> if (data.size >= 2) ObdTelemetry(moduleVoltage = moduleVoltage(data[0], data[1])) else ObdTelemetry()
             "46" -> ObdTelemetry(ambientTempC = temperature(data[0]))
             "61" -> ObdTelemetry(driverDemandTorquePercent = torquePercent(data[0]))
             "62" -> ObdTelemetry(actualTorquePercent = torquePercent(data[0]))
@@ -43,8 +44,4 @@ object ObdPidDecoder {
         }
     }
 
-    private fun responseBytes(response: String): List<Int> {
-        val clean = response.replace(Regex("[^0-9A-Fa-f]"), "").uppercase()
-        return clean.chunked(2).mapNotNull { it.toIntOrNull(16) }
-    }
 }

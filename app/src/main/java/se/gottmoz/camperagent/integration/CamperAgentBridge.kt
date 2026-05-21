@@ -9,7 +9,9 @@ import org.json.JSONObject
 import se.gottmoz.camperagent.integration.canbus.CanDiscoveryRepository
 import se.gottmoz.camperagent.integration.logging.RemoteLogUploader
 import se.gottmoz.camperagent.integration.obd.FordTransitEcoBlue2016Profile
+import se.gottmoz.camperagent.integration.obd.ObdPidDecoder
 import se.gottmoz.camperagent.integration.obd.ObdRepository
+import se.gottmoz.camperagent.integration.obd.ObdResponseParser
 import se.gottmoz.camperagent.integration.usbserial.UsbSerialManager
 import java.io.File
 import java.text.SimpleDateFormat
@@ -25,6 +27,8 @@ class CamperAgentBridge(context: Context) {
     private val canDiscoveryRepository = CanDiscoveryRepository()
     private val remoteLogUploader = RemoteLogUploader(context.applicationContext)
     private val obdRepository = ObdRepository()
+    @Volatile private var obdPolling = false
+    @Volatile private var obdConnected = false
 
     @JavascriptInterface fun getIntegrationSnapshot(): String = ok(repository.snapshot())
     @JavascriptInterface fun getBatteryBmsSnapshot(): String = ok(repository.batteryBmsSnapshot())
@@ -36,9 +40,13 @@ class CamperAgentBridge(context: Context) {
 
     @JavascriptInterface fun saveRemoteLoggingSettings(json: String): String = handle {
         val parsed = validatedJson(json)
+        val before = remoteLogUploader.settings().toString()
         remoteLogUploader.setEnabled(parsed.optBoolean("enabled", true))
         remoteLogUploader.setServerUrl(parsed.optString("serverUrl", RemoteLogUploader.DEFAULT_URL))
-        runBlocking { remoteLogUploader.uploadLog("INFO", "RemoteLogging", "tunnel/server settings changed", remoteLogUploader.settings()) }
+        val after = remoteLogUploader.settings()
+        if (before != after.toString()) {
+            runBlocking { remoteLogUploader.uploadLog("INFO", "RemoteLogging", "tunnel/server settings changed", after) }
+        }
         remoteLogUploader.settings()
     }
 
@@ -106,6 +114,9 @@ class CamperAgentBridge(context: Context) {
         usbSerialManager.statusJson()
     }
     @JavascriptInterface fun connectObd(json: String): String = handle {
+        if (obdConnected && obdPolling) {
+            return@handle obdConnectedJson("Already connected", "", "")
+        }
         val settings = validatedJson(json)
         val baudText = settings.optString("baudRate", "Auto")
         val baud = if (baudText == "Auto") FordTransitEcoBlue2016Profile.autoBaudOrder.first() else baudText.toIntOrNull() ?: 115200
@@ -151,10 +162,18 @@ class CamperAgentBridge(context: Context) {
             .put("readOnly", true)
     }
     @JavascriptInterface fun disconnectObd(): String = handle {
+        obdPolling = false
+        obdConnected = false
         usbSerialManager.close()
         JSONObject().put("state", "Disconnected").put("readOnly", true)
     }
-    @JavascriptInterface fun getObdConnectionStatus(): String = ok(usbSerialManager.statusJson().put("protocol", "ISO15765-4 CAN 11/500").put("elmProtocol", "6"))
+    @JavascriptInterface fun getObdConnectionStatus(): String = ok(usbSerialManager.statusJson()
+        .put("protocol", "ISO15765-4 CAN 11/500")
+        .put("elmProtocol", "6")
+        .put("connected", obdConnected)
+        .put("verified", obdConnected)
+        .put("polling", obdPolling)
+        .put("telemetry", obdRepository.telemetryJson()))
     @JavascriptInterface fun sendReadOnlyObdCommand(command: String): String = handle {
         val normalized = command.trim().uppercase()
         require(!isBlockedObdCommand(normalized)) { "Blocked unsafe OBD command" }
@@ -167,6 +186,18 @@ class CamperAgentBridge(context: Context) {
     }
     @JavascriptInterface fun scanSupportedPids(): String = ok(JSONObject().put("commands", org.json.JSONArray(listOf("0100", "0120", "0140", "0160"))).put("readOnly", true))
     @JavascriptInterface fun readDtcReadOnly(): String = ok(JSONObject().put("command", "03").put("dtcs", org.json.JSONArray()).put("readOnly", true))
+    @JavascriptInterface fun startElmMonitorReadOnly(): String = handle {
+        require(usbSerialManager.status.value.open) { "USB serial port is not open" }
+        listOf("ATH1", "ATS0", "ATAL", "ATCAF0").forEach { sendObdCommand(it, 2_000, "ElmMonitorSetup") }
+        sendObdCommand("ATMA", 5_000, "ElmMonitorReadOnly")
+            .put("mode", "ELM ATMA experimental read-only")
+            .put("rawLog", obdRepository.rawLogTail())
+            .put("readOnly", true)
+    }
+    @JavascriptInterface fun stopElmMonitorReadOnly(): String = handle {
+        if (usbSerialManager.status.value.open) usbSerialManager.writeBytes("\r".toByteArray(Charsets.US_ASCII))
+        JSONObject().put("state", "ElmMonitorStopped").put("readOnly", true)
+    }
     @JavascriptInterface fun listCanAdapters(): String = ok(canDiscoveryRepository.listAdapters())
     @JavascriptInterface fun startCanScan(profileJson: String): String = handle {
         val profileId = validatedJson(profileJson).optString("profileId", "battery_bms")
@@ -229,6 +260,7 @@ class CamperAgentBridge(context: Context) {
         .put("usbStatus", usbSerialManager.statusJson())
         .put("obdState", usbSerialManager.status.value.state.name)
         .put("obdRawLogTail", obdRepository.rawLogTail())
+        .put("obdTelemetry", obdRepository.telemetryJson())
         .put("obdSettings", settingsStore.getObdSettings())
         .put("vLinker", JSONObject()
             .put("vendorId", usbSerialManager.status.value.vendorId ?: JSONObject.NULL)
@@ -249,6 +281,8 @@ class CamperAgentBridge(context: Context) {
         var lastTx = ""
         var lastRx = ""
         var lastError = ""
+        var adapterIdentity = ""
+        var detectedProtocol = ""
         fun run(command: String, timeoutMs: Int, delayAfterMs: Long = 0): JSONObject {
             lastTx = command
             val result = sendObdCommand(command, timeoutMs, "AdapterProbing")
@@ -274,11 +308,19 @@ class CamperAgentBridge(context: Context) {
                 .put("lastRx", lastRx)
                 .put("lastError", lastError)
         }
-        run("AT@1", 2_000)
+        adapterIdentity = ati.optString("response")
+        if (adapterIdentity.isBlank()) adapterIdentity = run("AT@1", 2_000).optString("response")
+        else run("AT@1", 2_000)
         run("ATZ", 3_000, 1_000)
         listOf("ATE0", "ATL0", "ATS0", "ATH1", "ATAL", "ATST96", "ATSP6", "ATDP", "ATDPN").forEach { run(it, 2_000) }
+        detectedProtocol = rawLogValue("ATDP").ifBlank { "ISO 15765-4 (CAN 11/500)" }
         val supported = run("0100", 5_000)
-        if (supported.optString("response").contains("NO DATA", ignoreCase = true) || supported.optString("direction") == "timeout") {
+        val parsedSupported = ObdResponseParser.parseMode01(supported.optString("response"))
+        if (
+            supported.optString("response").contains("NO DATA", ignoreCase = true) ||
+            supported.optString("direction") == "timeout" ||
+            parsedSupported?.pid != "00"
+        ) {
             return JSONObject()
                 .put("state", "EcuNoResponse")
                 .put("message", "vLinker answers AT commands, but vehicle ECU did not respond on ISO15765-4 CAN11/500.")
@@ -286,11 +328,27 @@ class CamperAgentBridge(context: Context) {
                 .put("lastRx", lastRx)
                 .put("lastError", lastError)
         }
-        return JSONObject()
-            .put("state", "OBD connected")
-            .put("message", "Adapter and ECU responded")
-            .put("lastTx", lastTx)
-            .put("lastRx", lastRx)
+        val supportedPids = ObdPidDecoder.decodeSupportedPids(supported.optString("response"), 0x00)
+        obdRepository.updateSupportedPids(supportedPids)
+        obdConnected = true
+        startObdPolling(supportedPids)
+        runBlocking {
+            remoteLogUploader.uploadLog(
+                "INFO",
+                "ObdRepository",
+                "state ObdConnected",
+                JSONObject()
+                    .put("protocol", "ISO15765-4 CAN 11/500")
+                    .put("elmProtocol", "6")
+                    .put("supportedPids", JSONArray(supportedPids.sorted()))
+                    .put("polling", obdPolling)
+            )
+        }
+        return obdConnectedJson("Adapter and ECU verified", lastTx, lastRx)
+            .put("adapter", adapterIdentity)
+            .put("detectedProtocol", detectedProtocol)
+            .put("lastEcuResponse", supported.optString("response"))
+            .put("supportedPids", JSONArray(supportedPids.sorted()))
             .put("lastError", lastError)
     }
 
@@ -317,6 +375,61 @@ class CamperAgentBridge(context: Context) {
             runBlocking { remoteLogUploader.uploadLog("ERROR", "ObdRepository", "OBD error", JSONObject().put("direction", "error").put("command", command).put("elapsedMs", elapsed).put("state", state).put("error", error.message ?: "unknown")) }
             JSONObject().put("direction", "error").put("command", command).put("elapsedMs", elapsed).put("state", state).put("error", error.message ?: "unknown")
         }
+    }
+
+    private fun startObdPolling(supportedPids: Set<String>) {
+        if (obdPolling) return
+        val pollPids = listOf("0C", "0D", "05", "0F", "10", "11", "42", "46").filter { it in supportedPids }
+        if (pollPids.isEmpty()) return
+        obdPolling = true
+        runBlocking {
+            remoteLogUploader.uploadLog("INFO", "ObdRepository", "polling start", JSONObject().put("pids", JSONArray(pollPids)))
+        }
+        Thread {
+            while (obdPolling && usbSerialManager.status.value.open) {
+                pollPids.forEach { pid ->
+                    val result = sendObdCommand("01$pid", 2_000, "Polling")
+                    val response = result.optString("response")
+                    if (response.isNotBlank()) {
+                        obdRepository.mergeTelemetry(ObdPidDecoder.decodeTelemetry(pid, response))
+                    }
+                    Thread.sleep(if (pid in setOf("0C", "0D")) 250L else 500L)
+                }
+                Thread.sleep(500L)
+            }
+            obdPolling = false
+        }.apply {
+            name = "CamperObdPolling"
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun obdConnectedJson(message: String, lastTx: String, lastRx: String): JSONObject = JSONObject()
+        .put("state", "ObdConnected")
+        .put("connected", true)
+        .put("verified", true)
+        .put("polling", obdPolling)
+        .put("protocol", "ISO 15765-4 CAN 11/500")
+        .put("elmProtocol", "6")
+        .put("message", message)
+        .put("adapter", "ELM327 v2.3")
+        .put("ecu", "responding")
+        .put("lastTx", lastTx)
+        .put("lastRx", lastRx)
+        .put("telemetry", obdRepository.telemetryJson())
+        .put("rawLog", obdRepository.rawLogTail())
+        .put("readOnly", true)
+
+    private fun rawLogValue(command: String): String {
+        val log = obdRepository.rawLogTail()
+        for (index in log.length() - 1 downTo 0) {
+            val row = log.optJSONObject(index) ?: continue
+            if (row.optString("command") == command && row.optString("direction") == "rx") {
+                return row.optString("response")
+            }
+        }
+        return ""
     }
 
     private fun diagnosticsFile(): File {

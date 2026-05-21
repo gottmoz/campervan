@@ -849,6 +849,11 @@ function ObdSettingsModal({ onClose }) {
   const [rawLog, setRawLog] = useState([]);
   const [lastTx, setLastTx] = useState("");
   const [lastRx, setLastRx] = useState("");
+  const [connecting, setConnecting] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [verified, setVerified] = useState(false);
+  const [telemetry, setTelemetry] = useState({});
+  const [supportedPids, setSupportedPids] = useState([]);
   const [baudRate, setBaudRate] = useState("Auto");
   const [protocol, setProtocol] = useState("ISO15765-4 CAN 11/500");
   const [rawCommand, setRawCommand] = useState("ATI");
@@ -859,6 +864,7 @@ function ObdSettingsModal({ onClose }) {
   const safeRawCommands = ["ATI", "ATDP", "ATDPN", "0100", "010C", "010D"];
   const permissionBusy = Date.now() < permissionLockedUntil && status === "PermissionRequested";
   const permissionLabel = status === "NoDevice" || status === "NoDeviceFound" ? "Scan USB" : status === "PermissionRequested" ? "Waiting for Android popup..." : status === "PermissionGranted" ? "Permission already granted" : status === "Open" ? "Serial open" : "Request permission";
+  const connectLabel = connected || status === "ObdConnected" || status === "Polling" ? "Connected" : connecting ? "Connecting..." : status === "SerialOpen" || status === "Open" ? "Probe OBD" : status === "AdapterDetected" ? "Probe ECU" : status === "Error" || status.includes("Failed") || status.includes("NoResponse") ? "Retry connect" : status === "PermissionRequired" || status === "PermissionRequested" ? "Request USB permission" : "Connect";
   function applyResult(result) {
     const data = result?.data || {};
     const nextStatus = data.state || data.status?.state || data.status || (result?.ok ? "Device found" : "Error");
@@ -868,6 +874,11 @@ function ObdSettingsModal({ onClose }) {
     setLastError(result?.ok ? data.lastError || "" : result?.error || "Unknown error");
     setLastTx(data.lastTx || "");
     setLastRx(data.lastRx || "");
+    setConnected(Boolean(data.connected) || nextStatus === "ObdConnected" || nextStatus === "Polling");
+    setVerified(Boolean(data.verified) || nextStatus === "ObdConnected");
+    if (data.telemetry) setTelemetry(data.telemetry);
+    if (Array.isArray(data.supportedPids)) setSupportedPids(data.supportedPids);
+    else if (Array.isArray(data.telemetry?.supportedPids)) setSupportedPids(data.telemetry.supportedPids);
     if (Array.isArray(data.rawLog)) setRawLog(data.rawLog.slice(-60));
   }
   async function bridgeAction(action) {
@@ -878,15 +889,25 @@ function ObdSettingsModal({ onClose }) {
       connect: () => camperAgentBridge.connectObd(settings),
       disconnect: () => camperAgentBridge.disconnectObd(),
     };
+    if (action === "connect" && connected) return;
     if (action === "permission") setPermissionLockedUntil(Date.now() + 5000);
+    if (action === "connect") setConnecting(true);
     const result = await calls[action]();
     applyResult(result);
+    if (action === "disconnect") { setConnected(false); setVerified(false); }
+    setConnecting(false);
   }
   async function sendRaw() {
     const result = await camperAgentBridge.sendReadOnlyObdCommand(rawCommand);
     applyResult(result.ok ? { ...result, data: { ...result.data, state: `Sent ${rawCommand}` } } : result);
   }
-  const pids = ["RPM PID 0C", "Speed PID 0D", "Coolant temp PID 05", "Intake temp PID 0F", "MAF PID 10", "Throttle PID 11", "Ambient temp PID 46", "Driver demand torque PID 61", "Actual engine torque PID 62", "Engine reference torque PID 63"];
+  useEffect(() => {
+    if (!connected) return undefined;
+    const timer = setInterval(() => {
+      camperAgentBridge.getObdConnectionStatus().then(applyResult);
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [connected]);
   return (
     <ModalShell title="Ford OBD / vLinker" subtitle="USB vLinker, ISO15765-4 CAN11/500, PIDs, DTC read-only" icon={CarFront} onClose={onClose}>
       <div className="grid h-full grid-cols-[330px_1fr] gap-4">
@@ -898,16 +919,16 @@ function ObdSettingsModal({ onClose }) {
           <div className="grid grid-cols-2 gap-2">
             <button onClick={() => bridgeAction("scan")} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Rescan USB</button>
             <button disabled={permissionBusy} onClick={() => bridgeAction(status === "NoDevice" || status === "NoDeviceFound" ? "scan" : "permission")} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white disabled:opacity-50">{permissionLabel}</button>
-            <button onClick={() => bridgeAction("connect")} className="rounded-2xl bg-cyan-300 px-3 py-2 text-xs font-black text-slate-950">Connect</button>
+            <button disabled={connecting || connected} onClick={() => bridgeAction(status === "PermissionRequired" || status === "PermissionRequested" ? "permission" : "connect")} className="rounded-2xl bg-cyan-300 px-3 py-2 text-xs font-black text-slate-950 disabled:bg-emerald-300 disabled:text-slate-950">{connectLabel}</button>
             <button onClick={() => bridgeAction("disconnect")} className="rounded-2xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Disconnect</button>
           </div>
-          <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.045] p-3"><ReadOnlyBadge /><StatusBadge value={status} /></div>
+          <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.045] p-3"><ReadOnlyBadge /><StatusBadge value={verified ? "Verified" : status} /></div>
           {lastMessage && <div className="rounded-2xl border border-white/10 bg-black/20 p-3 text-xs text-slate-200">{lastMessage}</div>}
           {lastError && <div className="rounded-2xl border border-rose-200/20 bg-rose-300/10 p-3 text-xs text-rose-100">{lastError}</div>}
         </div>
         <div className="grid grid-cols-2 gap-4">
-          <div className="space-y-3 rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="text-sm font-black text-white">Raw OBD status</div><div className="grid grid-cols-2 gap-2 text-[11px] text-slate-300">{[["USB VID/PID", `${usbStatus.vendorId ?? "--"} / ${usbStatus.productId ?? "--"}`], ["Driver", usbStatus.driver || "--"], ["Permission", String(usbStatus.permissionGranted ?? "--")], ["Serial open", String(usbStatus.open ?? "--")], ["USB baud", baudRate], ["Protocol", `${protocol} / ATSP6`], ["Last TX", lastTx || "--"], ["Last RX", lastRx || "--"]].map(([k, v]) => <div key={k} className="rounded-xl bg-black/25 px-3 py-2"><div className="font-black uppercase tracking-[0.12em] text-slate-500">{k}</div><div className="truncate text-slate-100">{v}</div></div>)}</div><div className="grid grid-cols-3 gap-2">{safeRawCommands.map((cmd) => <button key={cmd} onClick={() => { setRawCommand(cmd); camperAgentBridge.sendReadOnlyObdCommand(cmd).then(applyResult); }} className="rounded-xl bg-white/[0.07] px-2 py-2 text-xs font-black text-white">{cmd}</button>)}<button onClick={() => setRawLog([])} className="rounded-xl bg-white/[0.07] px-2 py-2 text-xs font-black text-white">Clear log</button></div><div className="rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-xs text-amber-100">Read DTCs only. Clear DTC disabled in read-only mode.</div></div>
-          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-2 text-sm font-black text-white">Live read-only PIDs</div><div className="grid grid-cols-1 gap-1">{pids.slice(0, 7).map((pid) => <div key={pid} className="rounded-xl bg-white/[0.055] px-3 py-1.5 text-xs text-slate-200">{pid}</div>)}</div><div className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-3"><div className="mb-2 text-xs font-black text-white">Advanced / Raw OBD</div><label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={expertMode} onChange={(e) => setExpertMode(e.target.checked)} /> Expert mode</label><div className="mt-2 flex gap-2"><input disabled={!expertMode} value={rawCommand} onChange={(e) => setRawCommand(e.target.value)} className="min-w-0 flex-1 rounded-xl bg-slate-900 px-3 py-2 text-xs text-white" /><button disabled={!expertMode} onClick={sendRaw} className="rounded-xl bg-cyan-300 px-3 py-2 text-xs font-black text-slate-950 disabled:opacity-40">Send</button></div><div className="mt-2 text-[11px] text-amber-100">Do not send write/control commands. Read-only diagnostics only.</div></div><div className="mt-3 max-h-24 overflow-auto rounded-2xl bg-black/25 p-2 font-mono text-[10px] text-slate-300">{rawLog.length ? rawLog.map((row, idx) => <div key={`${row.timestamp}-${idx}`}>{row.direction} {row.command || ""} {row.response || row.error || row.state || ""}</div>) : "No raw OBD log yet"}</div></div>
+          <div className="space-y-3 rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="text-sm font-black text-white">Raw OBD status</div><div className="grid grid-cols-2 gap-2 text-[11px] text-slate-300">{[["USB VID/PID", `${usbStatus.vendorId ?? "--"} / ${usbStatus.productId ?? "--"}`], ["Driver", usbStatus.driver || "--"], ["Permission", String(usbStatus.permissionGranted ?? "--")], ["Serial open", String(usbStatus.open ?? "--")], ["Adapter", usbStatus.adapter || "ELM327 v2.3"], ["ECU", verified ? "responding" : "--"], ["Protocol", `${protocol} / ATSP6`], ["Last RX", lastRx || "--"]].map(([k, v]) => <div key={k} className="rounded-xl bg-black/25 px-3 py-2"><div className="font-black uppercase tracking-[0.12em] text-slate-500">{k}</div><div className="truncate text-slate-100">{v}</div></div>)}</div><div className="grid grid-cols-3 gap-2">{safeRawCommands.map((cmd) => <button key={cmd} onClick={() => { setRawCommand(cmd); camperAgentBridge.sendReadOnlyObdCommand(cmd).then(applyResult); }} className="rounded-xl bg-white/[0.07] px-2 py-2 text-xs font-black text-white">{cmd}</button>)}<button onClick={() => setRawLog([])} className="rounded-xl bg-white/[0.07] px-2 py-2 text-xs font-black text-white">Clear log</button></div><div className="rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-xs text-amber-100">OBD mode is request/response. Raw CAN stream requires USB-CAN or experimental ELM ATMA monitor.</div></div>
+          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-2 text-sm font-black text-white">Live read-only PIDs</div><div className="grid grid-cols-2 gap-1">{[["RPM", telemetry.rpm], ["Speed", telemetry.speedKph], ["Coolant", telemetry.coolantTempC], ["Intake", telemetry.intakeTempC], ["Voltage", telemetry.moduleVoltage], ["MAF", telemetry.mafGps], ["Throttle", telemetry.throttlePercent], ["Ambient", telemetry.ambientTempC]].map(([k, v]) => <div key={k} className="rounded-xl bg-white/[0.055] px-3 py-1.5 text-xs text-slate-200"><span className="text-slate-400">{k}</span> <span className="font-black text-white">{v ?? "--"}</span></div>)}</div><div className="mt-2 max-h-12 overflow-auto rounded-xl bg-black/20 p-2 text-[10px] text-cyan-100">Supported PIDs: {supportedPids.length ? supportedPids.join(", ") : "waiting for 0100"}</div><div className="mt-3 rounded-2xl border border-white/10 bg-black/20 p-3"><div className="mb-2 text-xs font-black text-white">Advanced / Raw OBD</div><label className="flex items-center gap-2 text-xs text-slate-300"><input type="checkbox" checked={expertMode} onChange={(e) => setExpertMode(e.target.checked)} /> Expert mode</label><div className="mt-2 flex gap-2"><input disabled={!expertMode} value={rawCommand} onChange={(e) => setRawCommand(e.target.value)} className="min-w-0 flex-1 rounded-xl bg-slate-900 px-3 py-2 text-xs text-white" /><button disabled={!expertMode} onClick={sendRaw} className="rounded-xl bg-cyan-300 px-3 py-2 text-xs font-black text-slate-950 disabled:opacity-40">Send</button></div><div className="mt-2 grid grid-cols-2 gap-2"><button disabled={!expertMode} onClick={() => camperAgentBridge.startElmMonitorReadOnly().then(applyResult)} className="rounded-xl bg-white/[0.07] px-2 py-2 text-[11px] font-black text-white disabled:opacity-40">Start ATMA</button><button disabled={!expertMode} onClick={() => camperAgentBridge.stopElmMonitorReadOnly().then(applyResult)} className="rounded-xl bg-white/[0.07] px-2 py-2 text-[11px] font-black text-white disabled:opacity-40">Stop monitor</button></div><div className="mt-2 text-[11px] text-amber-100">Experimental monitor: ATMA read-only only. Ford CAN TX remains blocked.</div></div><div className="mt-3 max-h-20 overflow-auto rounded-2xl bg-black/25 p-2 font-mono text-[10px] text-slate-300">{rawLog.length ? rawLog.map((row, idx) => <div key={`${row.timestamp}-${idx}`}>{row.direction} {row.command || ""} {row.response || row.error || row.state || ""}</div>) : "No raw OBD log yet"}</div></div>
         </div>
       </div>
     </ModalShell>
@@ -948,6 +969,11 @@ function CanBusScannerModal({ onClose }) {
           <div className="mb-3 flex items-center justify-between"><span className="font-black text-white">Raw CAN scan</span><StatusBadge value={status} /></div>
           <div className="grid grid-cols-6 gap-2 text-xs text-slate-400"><span>Timestamp</span><span>CAN ID</span><span>DLC</span><span>Data</span><span>Rate</span><span>Decoded</span></div>
           <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 p-4 text-sm text-slate-400">No frames captured yet.</div>
+          <div className="mt-4 grid grid-cols-4 gap-2 text-xs">
+            {["ReadOnly default", "BenchTest locked", "AuxiliaryCamperCan future", "FordVehicleCan blocked"].map((mode) => <div key={mode} className="rounded-xl border border-white/10 bg-black/20 p-3 text-slate-300">{mode}</div>)}
+          </div>
+          <button onClick={() => setStatus("Simulated TX logged")} className="mt-3 rounded-2xl bg-white/[0.07] px-4 py-2 text-xs font-black text-white">Simulated TX</button>
+          <div className="mt-3 rounded-2xl border border-rose-200/20 bg-rose-300/10 p-3 text-xs text-rose-100">Ford vehicle CAN writing is blocked. Use bench mode or approved adapter safety model.</div>
         </div>
       </div>
     </ModalShell>

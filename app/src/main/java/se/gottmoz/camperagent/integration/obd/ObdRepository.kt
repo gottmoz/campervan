@@ -37,6 +37,50 @@ class ObdRepository {
 
     fun rawLogTail(): JSONArray = JSONArray(rawLog.toList())
 
+    fun updateSupportedPids(supportedPids: Set<String>) {
+        _telemetry.value = _telemetry.value.copy(
+            supportedPids = supportedPids,
+            source = "Live",
+            updatedAtEpochMs = System.currentTimeMillis()
+        )
+    }
+
+    fun mergeTelemetry(update: ObdTelemetry) {
+        val current = _telemetry.value
+        _telemetry.value = current.copy(
+            speedKph = update.speedKph ?: current.speedKph,
+            rpm = update.rpm ?: current.rpm,
+            coolantTempC = update.coolantTempC ?: current.coolantTempC,
+            intakeTempC = update.intakeTempC ?: current.intakeTempC,
+            moduleVoltage = update.moduleVoltage ?: current.moduleVoltage,
+            mafGps = update.mafGps ?: current.mafGps,
+            throttlePercent = update.throttlePercent ?: current.throttlePercent,
+            ambientTempC = update.ambientTempC ?: current.ambientTempC,
+            driverDemandTorquePercent = update.driverDemandTorquePercent ?: current.driverDemandTorquePercent,
+            actualTorquePercent = update.actualTorquePercent ?: current.actualTorquePercent,
+            engineReferenceTorqueNm = update.engineReferenceTorqueNm ?: current.engineReferenceTorqueNm,
+            supportedPids = if (update.supportedPids.isNotEmpty()) update.supportedPids else current.supportedPids,
+            source = "Live",
+            updatedAtEpochMs = System.currentTimeMillis()
+        )
+    }
+
+    fun telemetryJson(): JSONObject {
+        val value = _telemetry.value
+        return JSONObject()
+            .put("speedKph", value.speedKph ?: JSONObject.NULL)
+            .put("rpm", value.rpm ?: JSONObject.NULL)
+            .put("coolantTempC", value.coolantTempC ?: JSONObject.NULL)
+            .put("intakeTempC", value.intakeTempC ?: JSONObject.NULL)
+            .put("moduleVoltage", value.moduleVoltage ?: JSONObject.NULL)
+            .put("mafGps", value.mafGps ?: JSONObject.NULL)
+            .put("throttlePercent", value.throttlePercent ?: JSONObject.NULL)
+            .put("ambientTempC", value.ambientTempC ?: JSONObject.NULL)
+            .put("supportedPids", JSONArray(value.supportedPids.sorted()))
+            .put("source", value.source)
+            .put("updatedAtEpochMs", value.updatedAtEpochMs)
+    }
+
     fun simulated(): ObdTelemetry = ObdTelemetry(
         speedKph = 0,
         rpm = 780,
@@ -46,7 +90,8 @@ class ObdRepository {
         throttlePercent = 12.0,
         ambientTempC = 18,
         dtcCodes = emptyList(),
-        supportedPids = rawSupportedPids()
+        supportedPids = rawSupportedPids(),
+        source = "Simulated"
     )
 
     private fun rawSupportedPids() = setOf("0C", "0D", "05", "0F", "10", "11", "46")

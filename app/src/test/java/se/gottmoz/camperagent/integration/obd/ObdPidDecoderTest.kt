@@ -11,6 +11,7 @@ class ObdPidDecoderTest {
         assertEquals(90, ObdPidDecoder.temperature(130))
         assertEquals(10.0, ObdPidDecoder.maf(0x03, 0xE8), 0.001)
         assertEquals(50.196, ObdPidDecoder.throttle(128), 0.001)
+        assertEquals(13.8, ObdPidDecoder.moduleVoltage(0x35, 0xE8), 0.001)
         assertEquals(5, ObdPidDecoder.torquePercent(130))
         assertEquals(400, ObdPidDecoder.referenceTorqueNm(0x01, 0x90))
     }
@@ -20,5 +21,22 @@ class ObdPidDecoderTest {
         assertTrue(supported.contains("01"))
         assertTrue(supported.contains("0C"))
         assertTrue(supported.contains("20"))
+    }
+
+    @Test fun parsesHeaderedSupportedPidResponse() {
+        val parsed = ObdResponseParser.parseMode01("7E8064100983B8017\r\r>")
+        assertEquals("7E8", parsed?.ecuId)
+        assertEquals("41", parsed?.service)
+        assertEquals("00", parsed?.pid)
+        assertEquals(listOf(0x98, 0x3B, 0x80, 0x17), parsed?.dataBytes)
+
+        val supported = ObdPidDecoder.decodeSupportedPids("7E8064100983B8017", 0x00)
+        assertEquals(setOf("01", "04", "05", "0B", "0C", "0D", "0F", "10", "11", "1C", "1E", "1F", "20"), supported)
+    }
+
+    @Test fun parsesCommonMode01ResponseForms() {
+        assertEquals(listOf(0x1A, 0xF8), ObdResponseParser.parseMode01("7E804410C1AF8")?.dataBytes)
+        assertEquals(listOf(0x1A, 0xF8), ObdResponseParser.parseMode01("410C1AF8")?.dataBytes)
+        assertEquals(listOf(0x00), ObdResponseParser.parseMode01("7E8 03 41 0D 00")?.dataBytes)
     }
 }

@@ -37,6 +37,7 @@ data class ObdTelemetry(
     val rpm: Int? = null,
     val coolantTempC: Int? = null,
     val intakeTempC: Int? = null,
+    val moduleVoltage: Double? = null,
     val mafGps: Double? = null,
     val throttlePercent: Double? = null,
     val ambientTempC: Int? = null,
@@ -45,5 +46,6 @@ data class ObdTelemetry(
     val engineReferenceTorqueNm: Int? = null,
     val dtcCodes: List<String> = emptyList(),
     val supportedPids: Set<String> = emptySet(),
+    val source: String = "Simulated",
     val updatedAtEpochMs: Long = System.currentTimeMillis()
 )

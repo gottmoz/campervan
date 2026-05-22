@@ -386,6 +386,9 @@ function HomeView({ state, setters, openEnergyStats }) {
 function VehicleDashboardView() {
   const [page, setPage] = useState("dashboard");
   const [snapshot, setSnapshot] = useState(null);
+  const [commands, setCommands] = useState([]);
+  const [commandStatus, setCommandStatus] = useState("");
+  const [sendingCommand, setSendingCommand] = useState(null);
   const [time, setTime] = useState(() => new Date());
   const data = snapshot?.telemetry || {};
   const status = snapshot?.stale ? "STALE" : snapshot?.state === "Reconnecting" ? "RECONNECTING" : snapshot?.connected && snapshot?.polling ? "LIVE" : "OFFLINE";
@@ -393,7 +396,26 @@ function VehicleDashboardView() {
   const isSimulated = data.source === "simulator" || snapshot?.source === "simulator";
   const oilValue = Number.isFinite(data.oilTempC) ? data.oilTempC : (isSimulated ? 92 : null);
   const outsideValue = Number.isFinite(data.outsideTempC) ? data.outsideTempC : Number.isFinite(data.ambientTempC) ? data.ambientTempC : null;
-  const gear = Number.isFinite(data.speedKph) && Number.isFinite(data.rpm) && data.speedKph > 2 && data.rpm > 600 ? "D?" : "LIVE";
+  const acOn = Number(data.acCompressorStatus) === 1;
+  const driveModes = [
+    ["drive_mode_normal", "Normal", "00"],
+    ["drive_mode_eco", "Eco", "06"],
+    ["drive_mode_slippery", "Slippery", "05"],
+    ["drive_mode_mud_ruts", "Mud & Ruts", "08"],
+    ["drive_mode_tow_haul", "Tow / Haul", "03"],
+  ];
+  const commandById = Object.fromEntries(commands.map((command) => [command.id, command]));
+  const commandReady = (id) => commandById[id]?.enabled && commandById[id]?.verifiedByUser && commandById[id]?.command;
+  const runCommand = async (id) => {
+    if (!commandReady(id)) {
+      setCommandStatus("Command not configured");
+      return;
+    }
+    setSendingCommand(id);
+    const result = await camperAgentBridge.executeVehicleCommand(id);
+    setSendingCommand(null);
+    setCommandStatus(result.ok ? `${commandById[id]?.displayName || id}: ${result.data.statusVerified ? "verified" : "sent"}` : result.error);
+  };
 
   useEffect(() => {
     let active = true;
@@ -404,6 +426,12 @@ function VehicleDashboardView() {
     load();
     const timer = setInterval(load, 500);
     return () => { active = false; clearInterval(timer); };
+  }, []);
+
+  useEffect(() => {
+    camperAgentBridge.getVehicleCommands().then((result) => {
+      if (result.ok) setCommands(result.data.commands || []);
+    });
   }, []);
 
   useEffect(() => {
@@ -436,18 +464,24 @@ function VehicleDashboardView() {
           <div className="grid min-h-0 grid-rows-[minmax(0,1fr)_124px] gap-3">
             <div className="grid min-h-0 grid-cols-[1fr_250px_1fr] gap-3">
               <FuturisticGauge label="RPM" value={Number.isFinite(data.rpm) ? data.rpm / 1000 : null} min={0} max={5} unit="x1000" marks={[0, 1, 2, 3, 4, 5]} redFrom={4} formatter={() => Math.round(data.rpm).toLocaleString("sv-SE")} accent="#20c8ff" stale={stale} />
-              <div className="flex min-h-0 flex-col items-center justify-center border border-cyan-300/30 bg-slate-950/70 shadow-xl shadow-cyan-500/10 [clip-path:polygon(12%_0,88%_0,100%_12%,100%_88%,88%_100%,12%_100%,0_88%,0_12%)]">
-                <div className="text-sm font-black uppercase tracking-[0.2em] text-cyan-300">Gear</div>
-                <div className="mt-1 text-5xl font-black text-white">{gear}</div>
-                <div className="mt-6 h-24 w-32 rounded-t-[3rem] border border-cyan-300/40 border-b-cyan-300/10 bg-[radial-gradient(circle_at_50%_70%,rgba(34,211,238,0.22),transparent_42%)]" />
-                <div className="mt-2 text-xs font-bold uppercase tracking-[0.18em] text-cyan-200">Transit</div>
+              <div className="flex min-h-0 flex-col justify-center border border-cyan-300/30 bg-slate-950/70 p-3 shadow-xl shadow-cyan-500/10 [clip-path:polygon(12%_0,88%_0,100%_12%,100%_88%,88%_100%,12%_100%,0_88%,0_12%)]">
+                <div className="mb-2 text-center text-xs font-black uppercase tracking-[0.18em] text-cyan-300">Driving Modes</div>
+                <div className="space-y-1.5">
+                  {driveModes.map(([id, label, value]) => {
+                    const active = String(data.driveMode ?? "").padStart(2, "0") === value;
+                    return <button key={id} onClick={() => runCommand(id)} className={cx("w-full rounded-xl border px-2 py-1.5 text-xs font-black", active ? "border-cyan-200 bg-cyan-300/20 text-cyan-100" : commandReady(id) ? "border-white/10 bg-white/[0.07] text-white" : "border-white/5 bg-white/[0.03] text-slate-500")}>{sendingCommand === id ? "Sending..." : label}</button>;
+                  })}
+                </div>
+                <div className="mt-2 min-h-[16px] truncate text-center text-[10px] font-bold text-amber-100">{commandStatus}</div>
               </div>
               <FuturisticGauge label="km/h" value={data.speedKph} min={0} max={200} unit="km/h" marks={[0,20,40,60,80,100,120,140,160,180,200]} redFrom={170} formatter={(v) => Math.round(v)} accent="#20c8ff" stale={stale} />
             </div>
-            <div className="grid min-h-0 grid-cols-3 gap-3">
+            <div className="grid min-h-0 grid-cols-5 gap-3">
               <VehicleTempCard label="Coolant Temp" value={data.coolantTempC} min={40} max={120} warning={100} icon="?" stale={stale} />
               <VehicleTempCard label="Oil Temp" value={oilValue} min={40} max={130} warning={115} icon="?" subtext={oilValue == null ? "Not available" : undefined} simulated={isSimulated && oilValue != null} stale={stale} />
               <VehicleTempCard label="Outside Temp" value={outsideValue} min={-30} max={50} warning={45} icon="?" subtext={outsideValue == null ? "Not available" : undefined} stale={stale} />
+              <VehicleAcTile acOn={acOn} readyOn={commandReady("ac_on")} readyOff={commandReady("ac_off")} sending={sendingCommand === "ac_on" || sendingCommand === "ac_off"} onPress={() => runCommand(acOn ? "ac_off" : "ac_on")} />
+              <VehicleChargeTile data={data} />
             </div>
           </div>
         )}
@@ -457,6 +491,38 @@ function VehicleDashboardView() {
 
         <VehicleBottomNav active={page} setActive={setPage} />
       </div>
+    </div>
+  );
+}
+
+function VehicleAcTile({ acOn, readyOn, readyOff, sending, onPress }) {
+  const ready = acOn ? readyOff : readyOn;
+  return (
+    <div className="relative overflow-hidden border border-cyan-300/40 bg-slate-950/80 p-3 shadow-xl shadow-cyan-500/20 [clip-path:polygon(8%_0,92%_0,100%_18%,100%_82%,92%_100%,8%_100%,0_82%,0_18%)]">
+      <div className="text-xs font-black uppercase tracking-[0.14em] text-cyan-200">AC</div>
+      <div className="mt-1 text-3xl font-black text-white">{acOn ? "ON" : "OFF"}</div>
+      <button onClick={onPress} disabled={!ready || sending} className="mt-2 w-full rounded-xl bg-cyan-300 px-2 py-1.5 text-[10px] font-black text-slate-950 disabled:bg-white/[0.08] disabled:text-slate-500">
+        {ready ? sending ? "Sending..." : acOn ? "AC OFF" : "AC ON" : "Configure AC command"}
+      </button>
+      <div className="mt-1 text-[9px] font-bold text-slate-500">PCM 22099B status</div>
+    </div>
+  );
+}
+
+function VehicleChargeTile({ data }) {
+  const current = Number.isFinite(data.generatorCurrentA) ? `${Math.round(data.generatorCurrentA)} A` : "--";
+  const voltage = Number.isFinite(data.vehicleBatteryVoltage) ? `${Number(data.vehicleBatteryVoltage).toFixed(1)} V` : "--";
+  const duty = Number.isFinite(data.alternatorDutyPercent) ? `${Math.round(data.alternatorDutyPercent)}%` : "--";
+  const charging = Number.isFinite(data.generatorCurrentA) ? data.generatorCurrentA > 2 ? "Charging" : "Idle" : "Unknown";
+  return (
+    <div className="relative overflow-hidden border border-cyan-300/40 bg-slate-950/80 p-3 shadow-xl shadow-cyan-500/20 [clip-path:polygon(8%_0,92%_0,100%_18%,100%_82%,92%_100%,8%_100%,0_82%,0_18%)]">
+      <div className="text-xs font-black uppercase tracking-[0.14em] text-cyan-200">Generator</div>
+      <div className="mt-1 grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px] font-bold text-slate-300">
+        <span>Current</span><span className="text-right text-white">{current}</span>
+        <span>Voltage</span><span className="text-right text-white">{voltage}</span>
+        <span>Alt duty</span><span className="text-right text-white">{duty}</span>
+      </div>
+      <div className="mt-1 text-center text-[10px] font-black uppercase text-emerald-300">{charging}</div>
     </div>
   );
 }
@@ -1326,7 +1392,7 @@ function ObdPidMappingSettingsModal({ onClose }) {
   const [selected, setSelected] = useState(null);
   const [status, setStatus] = useState("");
   const mainKeys = ["speedKph", "rpm", "coolantTempC", "oilTempC", "outsideTempC"];
-  const formulaPresets = ["A", "A-40", "((A*256)+B)/4", "((A*256)+B)/100", "((A*256)+B)/1000", "A*100/255", "A-125", "((A*256)+B)*0.05", "custom future"];
+  const formulaPresets = ["A", "A-40", "((A*256)+B)", "((A*256)+B)/4", "((A*256)+B)/100", "((A*256)+B)/1000", "A*100/255", "A-125", "((A*256)+B)*0.05", "((A*256)+B)*2/100", "custom future"];
 
   useEffect(() => {
     camperAgentBridge.getObdPidMappings().then((result) => {
@@ -1353,7 +1419,7 @@ function ObdPidMappingSettingsModal({ onClose }) {
   };
 
   return (
-    <ModalFrame title="OBD PID Mapping" onClose={onClose}>
+    <ModalFrame title="OBD PID Library" onClose={onClose}>
       <div className="grid h-full grid-cols-[1fr_340px] gap-4">
         <div className="min-h-0 rounded-3xl border border-white/10 bg-white/[0.04] p-4">
           <div className="mb-3 flex gap-2">
@@ -1376,9 +1442,10 @@ function ObdPidMappingSettingsModal({ onClose }) {
           {selected ? (
             <div className="space-y-2 text-xs">
               <label className="flex items-center gap-2 font-bold text-white"><input type="checkbox" checked={selected.enabled} onChange={(e) => updateSelected({ enabled: e.target.checked })} /> Enabled</label>
-              {["label", "functionKey", "mode", "service", "pid", "unit"].map((field) => (
+              {["label", "functionKey", "mode", "service", "pid", "unit", "category", "module"].map((field) => (
                 <label key={field} className="block text-slate-300">{field}<input value={selected[field] ?? ""} onChange={(e) => updateSelected({ [field]: e.target.value })} className="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 font-mono text-white" /></label>
               ))}
+              <label className="block text-slate-300">setupCommands<textarea value={(selected.setupCommands || []).join("\n")} onChange={(e) => updateSelected({ setupCommands: e.target.value.split(/\n+/).map((v) => v.trim()).filter(Boolean) })} className="mt-1 h-14 w-full rounded-xl bg-slate-900 px-3 py-2 font-mono text-white" /></label>
               <label className="block text-slate-300">Formula preset<select value={selected.formula} onChange={(e) => updateSelected({ formula: e.target.value })} className="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 text-white">{formulaPresets.map((item) => <option key={item}>{item}</option>)}</select></label>
               <div className="grid grid-cols-2 gap-2">
                 <label className="text-slate-300">Poll ms<input type="number" value={selected.pollIntervalMs ?? 2000} onChange={(e) => updateSelected({ pollIntervalMs: Number(e.target.value) })} className="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 text-white" /></label>
@@ -1391,6 +1458,79 @@ function ObdPidMappingSettingsModal({ onClose }) {
               <div className="max-h-16 overflow-auto rounded-xl bg-black/25 p-2 font-mono text-[10px] text-cyan-100">{status || "No test yet"}</div>
             </div>
           ) : <div className="flex h-full items-center justify-center text-sm text-slate-400">Select a mapping row</div>}
+        </div>
+      </div>
+    </ModalFrame>
+  );
+}
+
+function VehicleCommandLibraryModal({ onClose }) {
+  const [tab, setTab] = useState("ac");
+  const [commands, setCommands] = useState([]);
+  const [selected, setSelected] = useState(null);
+  const [status, setStatus] = useState("");
+  const [log, setLog] = useState([]);
+  useEffect(() => {
+    camperAgentBridge.getVehicleCommands().then((result) => {
+      if (result.ok) setCommands(result.data.commands || []);
+    });
+    camperAgentBridge.getVehicleCommandLog().then((result) => {
+      if (result.ok) setLog(result.data.log || []);
+    });
+  }, []);
+  const visible = commands.filter((command) => tab === "ac" ? command.category === "HVAC / AC" : tab === "drive" ? command.category === "Driving Modes" : true);
+  const updateSelected = (patch) => setSelected((current) => ({ ...current, ...patch }));
+  const save = async () => {
+    const next = commands.map((command) => command.id === selected.id ? selected : command);
+    setCommands(next);
+    const result = await camperAgentBridge.saveVehicleCommands({ commands: next });
+    setStatus(result.ok ? "Saved command library" : result.error);
+  };
+  const test = async () => {
+    const result = await camperAgentBridge.testVehicleCommand(selected);
+    setStatus(result.ok ? `TX ${result.data.tx || selected.command} RX ${result.data.rx || "--"}` : result.error);
+  };
+  const execute = async () => {
+    const result = await camperAgentBridge.executeVehicleCommand(selected.id);
+    setStatus(result.ok ? `${selected.displayName}: ${result.data.statusVerified ? "verified by status PID" : "sent"}` : result.error);
+  };
+  return (
+    <ModalFrame title="Vehicle Command Library" onClose={onClose}>
+      <div className="grid h-full grid-cols-[1fr_360px] gap-4">
+        <div className="min-h-0 rounded-3xl border border-white/10 bg-white/[0.04] p-4">
+          <div className="mb-3 flex gap-2">
+            {["ac", "drive", "custom", "log"].map((item) => <button key={item} onClick={() => setTab(item)} className={cx("rounded-xl px-3 py-2 text-xs font-black", tab === item ? "bg-cyan-300 text-slate-950" : "bg-white/[0.07] text-white")}>{item === "ac" ? "AC Commands" : item === "drive" ? "Drive Modes" : item === "log" ? "Execution Log" : "Custom"}</button>)}
+          </div>
+          <div className="rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-xs font-bold text-amber-100">Only use commands you have verified in FORScan. Commands are logged before and after sending.</div>
+          <div className="mt-3 max-h-[330px] space-y-2 overflow-y-auto pr-1">
+            {tab === "log" ? log.map((row, index) => <div key={index} className="rounded-xl bg-black/25 p-2 font-mono text-[10px] text-slate-300">{row.timestamp} {row.commandId} TX {row.tx || "--"} RX {row.rx || "--"} {row.error || ""}</div>) : visible.map((command) => (
+              <button key={command.id} onClick={() => setSelected(command)} className="grid w-full grid-cols-[1fr_70px_70px] items-center gap-2 rounded-2xl border border-white/10 bg-slate-950/55 px-3 py-2 text-left text-xs hover:bg-white/[0.08]">
+                <div><div className="font-black text-white">{command.displayName}</div><div className="text-slate-400">{command.module} {command.category}</div></div>
+                <div className={command.enabled ? "text-emerald-300" : "text-slate-500"}>{command.enabled ? "Enabled" : "Off"}</div>
+                <div className={command.verifiedByUser ? "text-cyan-200" : "text-amber-200"}>{command.verifiedByUser ? "Verified" : "Not verified"}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="h-full min-h-0 overflow-y-auto rounded-3xl border border-cyan-300/20 bg-slate-950/70 p-4">
+          {selected ? <div className="space-y-2 text-xs">
+            <label className="flex items-center gap-2 font-bold text-white"><input type="checkbox" checked={selected.enabled} onChange={(e) => updateSelected({ enabled: e.target.checked })} /> Enabled</label>
+            <label className="flex items-center gap-2 font-bold text-white"><input type="checkbox" checked={selected.verifiedByUser} onChange={(e) => updateSelected({ verifiedByUser: e.target.checked })} /> Verified in FORScan</label>
+            {["displayName", "category", "module", "command", "expectedPositiveResponse", "expectedStatusFunctionKey", "expectedStatusValue", "verifiedSource"].map((field) => (
+              <label key={field} className="block text-slate-300">{field}<input value={selected[field] ?? ""} onChange={(e) => updateSelected({ [field]: e.target.value })} className="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 font-mono text-white" /></label>
+            ))}
+            <label className="block text-slate-300">setupCommands<textarea value={(selected.setupCommands || []).join("\n")} onChange={(e) => updateSelected({ setupCommands: e.target.value.split(/\n+/).map((v) => v.trim()).filter(Boolean) })} className="mt-1 h-16 w-full rounded-xl bg-slate-900 px-3 py-2 font-mono text-white" /></label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="text-slate-300">Cooldown ms<input type="number" value={selected.cooldownMs ?? 1500} onChange={(e) => updateSelected({ cooldownMs: Number(e.target.value) })} className="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 text-white" /></label>
+              <label className="flex items-end gap-2 pb-2 font-bold text-white"><input type="checkbox" checked={selected.requiresVehicleStopped} onChange={(e) => updateSelected({ requiresVehicleStopped: e.target.checked })} /> Stopped</label>
+            </div>
+            <div className="flex flex-wrap gap-2 pt-2">
+              <button onClick={test} className="rounded-xl bg-white/[0.08] px-3 py-2 font-black text-white">Test</button>
+              <button onClick={execute} className="rounded-xl bg-amber-300 px-3 py-2 font-black text-slate-950">Send</button>
+              <button onClick={save} className="rounded-xl bg-cyan-300 px-3 py-2 font-black text-slate-950">Save</button>
+            </div>
+            <div className="max-h-16 overflow-auto rounded-xl bg-black/25 p-2 font-mono text-[10px] text-cyan-100">{status || "No command sent"}</div>
+          </div> : <div className="flex h-full items-center justify-center text-sm text-slate-400">Select a command</div>}
         </div>
       </div>
     </ModalFrame>
@@ -1477,8 +1617,9 @@ function SystemsView({ state, setters, openIntegrationSettings }) {
         <div className="max-h-[390px] space-y-2 overflow-y-auto pr-1">
           {[
             ["Ford OBD / vLinker", "USB vLinker, ISO15765-4 CAN11/500, PIDs, DTC read-only", "obd"],
+            ["OBD PID Library", "Read PIDs, formulas, polling and troubleshooting", "obdPidMapping"],
+            ["Vehicle Command Library", "FORScan-verified commands for AC and drive modes", "vehicleCommands"],
             ["Vehicle Dashboard", "Live gauges, vehicle display, mapped OBD values", null],
-            ["OBD PID Mapping", "Map Ford values to custom OBD PIDs and formulas", "obdPidMapping"],
             ["T-CAN485 Gateway", "Android hotspot, UDP discovery, RS485 BMS gateway", "tcan485"],
             ["Battery / BMS", "12V 320Ah LiFePO4, 250A BMS, Bluetooth + CAN", "battery"],
             ["Victron System", "SmartSolar MPPT 100/20 and Orion-Tr 12/12V 18A", "victron"],
@@ -1674,6 +1815,7 @@ export default function CampervanHMI() {
           {integrationModal === "garmin" && <GarminSettingsModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "obd" && <ObdSettingsModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "obdPidMapping" && <ObdPidMappingSettingsModal onClose={() => setIntegrationModal(null)} />}
+          {integrationModal === "vehicleCommands" && <VehicleCommandLibraryModal onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "displayFit" && <DisplayFitSettingsModal settings={displayFit} scale={hmiScale} onSave={saveDisplayFit} onClose={() => setIntegrationModal(null)} />}
           {integrationModal === "health" && <IntegrationsHealthModal onClose={() => setIntegrationModal(null)} />}
         </AnimatePresence>

@@ -17,6 +17,8 @@ import se.gottmoz.camperagent.integration.obd.ObdPidMappingStore
 import se.gottmoz.camperagent.integration.obd.ObdPidDecoder
 import se.gottmoz.camperagent.integration.obd.ObdRepository
 import se.gottmoz.camperagent.integration.obd.ObdResponseParser
+import se.gottmoz.camperagent.integration.obd.VehicleCommandDefinition
+import se.gottmoz.camperagent.integration.obd.VehicleCommandStore
 import se.gottmoz.camperagent.integration.tcan485.TCan485Repository
 import se.gottmoz.camperagent.integration.tcan485.TCan485SettingsStore
 import se.gottmoz.camperagent.integration.usbserial.UsbSerialManager
@@ -36,11 +38,13 @@ class CamperAgentBridge(context: Context) {
     private val remoteLogUploader = RemoteLogUploader(context.applicationContext)
     private val obdRepository = ObdRepository()
     private val obdPidMappingStore = ObdPidMappingStore(context.applicationContext)
+    private val vehicleCommandStore = VehicleCommandStore(context.applicationContext)
     private val tcan485Repository = TCan485Repository(TCan485SettingsStore(context.applicationContext))
     private val obdCommandLock = Any()
     private val pidErrorCounts = ConcurrentHashMap<String, Int>()
     private val pidPausedUntil = ConcurrentHashMap<String, Long>()
     private val mappedValues = ConcurrentHashMap<String, Any>()
+    private val commandLog = ArrayDeque<JSONObject>()
     @Volatile private var obdPolling = false
     @Volatile private var obdConnected = false
     @Volatile private var obdConnecting = false
@@ -147,10 +151,23 @@ class CamperAgentBridge(context: Context) {
     @JavascriptInterface fun saveObdPidMappings(json: String): String = handle { obdPidMappingStore.save(validatedJson(json)) }
     @JavascriptInterface fun resetObdPidMappingsToDefault(): String = ok(obdPidMappingStore.reset())
     @JavascriptInterface fun getObdPidMappingStatus(): String = ok(pidMappingStatusJson())
+    @JavascriptInterface fun getVehicleCommands(): String = ok(vehicleCommandStore.getJson())
+    @JavascriptInterface fun saveVehicleCommands(json: String): String = handle { vehicleCommandStore.save(validatedJson(json)) }
+    @JavascriptInterface fun exportVehicleCommands(): String = ok(vehicleCommandStore.exportJson())
+    @JavascriptInterface fun importVehicleCommands(json: String): String = handle { vehicleCommandStore.save(validatedJson(json)) }
+    @JavascriptInterface fun getVehicleCommandLog(): String = ok(JSONObject().put("log", JSONArray(commandLog.toList())))
+    @JavascriptInterface fun testVehicleCommand(json: String): String = handle { executeVehicleCommandDefinition(VehicleCommandDefinition.fromJson(validatedJson(json)), persist = false) }
+    @JavascriptInterface fun executeVehicleCommand(commandId: String): String = handle {
+        val command = vehicleCommandStore.find(commandId) ?: error("Unknown vehicle command: $commandId")
+        executeVehicleCommandDefinition(command, persist = true)
+    }
     @JavascriptInterface fun testObdPidMapping(json: String): String = handle {
         val mapping = ObdPidMapping.fromJson(validatedJson(json))
         require(mapping.service.isNotBlank() && mapping.pid.isNotBlank()) { "Service and PID are required" }
         require(!isBlockedObdCommand(mapping.command)) { "Blocked unsafe OBD command" }
+        if (usbSerialManager.status.value.open) mapping.setupCommands.forEach { setup ->
+            if (setup.isNotBlank()) sendObdCommand(setup, 1_500, "PidMappingTestSetup")
+        }
         val result = if (usbSerialManager.status.value.open) sendObdCommand(mapping.command, mapping.timeoutMs, "PidMappingTest") else JSONObject()
             .put("direction", "error")
             .put("command", mapping.command)
@@ -540,6 +557,9 @@ class CamperAgentBridge(context: Context) {
     private fun pollMapping(mapping: ObdPidMapping) {
         val now = System.currentTimeMillis()
         if ((pidPausedUntil[mapping.functionKey] ?: 0L) > now) return
+        mapping.setupCommands.forEach { setup ->
+            if (setup.isNotBlank()) sendObdCommand(setup, 1_500, "PollingSetup")
+        }
         val result = sendObdCommand(mapping.command, mapping.timeoutMs, "Polling")
         val response = result.optString("response")
         val decoded = runCatching { ObdFormulaEvaluator.decode(mapping, response) }.getOrNull()
@@ -558,6 +578,69 @@ class CamperAgentBridge(context: Context) {
             lastObdError = result.optString("error").ifBlank { response.ifBlank { "No valid PID response" } }
             runBlocking { remoteLogUploader.uploadLog("WARN", "ObdRepository", "polling timeout", JSONObject().put("pid", mapping.pid).put("functionKey", mapping.functionKey).put("errorCount", errorCount).put("paused", errorCount >= 3).put("lastError", lastObdError)) }
         }
+    }
+
+    private fun executeVehicleCommandDefinition(command: VehicleCommandDefinition, persist: Boolean): JSONObject {
+        if (!obdConnected || !usbSerialManager.status.value.open) {
+            logVehicleCommand("Vehicle command blocked - OBD not connected", command, null, null, "OBD is not connected and verified")
+            error("OBD is not connected and verified")
+        }
+        if (!command.canExecute()) {
+            logVehicleCommand("Vehicle command blocked - not verified", command, null, null, "Command is not enabled and FORScan-verified.")
+            error("Command is not enabled and FORScan-verified.")
+        }
+        val lastSent = command.lastSentEpochMs ?: 0L
+        val cooldownLeft = command.cooldownMs - (System.currentTimeMillis() - lastSent)
+        if (cooldownLeft > 0) error("Command cooldown active for ${cooldownLeft}ms")
+        command.setupCommands.forEach { setup ->
+            if (setup.isNotBlank()) sendObdCommand(setup, 1_500, "VehicleCommandSetup")
+        }
+        logVehicleCommand("Vehicle command TX", command, command.command, null, null)
+        val result = sendObdCommand(command.command, 3_000, "VehicleCommand")
+        val rx = result.optString("response")
+        val error = result.optString("error").ifBlank { null }
+        if (persist) vehicleCommandStore.updateResult(command, command.command, rx, error)
+        val verified = verifyCommandStatus(command)
+        val message = if (error == null) "Vehicle command RX" else "Vehicle command failed"
+        logVehicleCommand(message, command, command.command, rx, error)
+        return JSONObject()
+            .put("commandId", command.id)
+            .put("displayName", command.displayName)
+            .put("tx", command.command)
+            .put("rx", rx)
+            .put("statusVerified", verified)
+            .put("error", error ?: JSONObject.NULL)
+            .put("readOnly", false)
+    }
+
+    private fun verifyCommandStatus(command: VehicleCommandDefinition): Boolean {
+        val key = command.expectedStatusFunctionKey ?: return false
+        val expected = command.expectedStatusValue ?: return false
+        val mapping = obdPidMappingStore.getMappings().firstOrNull { it.functionKey == key } ?: return false
+        mapping.setupCommands.forEach { setup -> if (setup.isNotBlank()) sendObdCommand(setup, 1_500, "VehicleCommandVerifySetup") }
+        val result = sendObdCommand(mapping.command, mapping.timeoutMs, "VehicleCommandVerify")
+        val decoded = runCatching { ObdFormulaEvaluator.decode(mapping, result.optString("response")) }.getOrNull() ?: return false
+        val actual = "%02X".format(decoded.optDouble("value").toInt())
+        mappedValues[key] = decoded.optDouble("value")
+        val ok = actual == expected.uppercase()
+        runBlocking { remoteLogUploader.uploadLog(if (ok) "INFO" else "WARN", "VehicleCommand", "Vehicle command verified by status PID", JSONObject().put("commandId", command.id).put("functionKey", key).put("expected", expected).put("actual", actual)) }
+        return ok
+    }
+
+    private fun logVehicleCommand(message: String, command: VehicleCommandDefinition, tx: String?, rx: String?, error: String?) {
+        val entry = JSONObject()
+            .put("timestamp", nowIso())
+            .put("commandId", command.id)
+            .put("displayName", command.displayName)
+            .put("setupCommands", JSONArray(command.setupCommands))
+            .put("tx", tx ?: JSONObject.NULL)
+            .put("rx", rx ?: JSONObject.NULL)
+            .put("success", error == null)
+            .put("error", error ?: JSONObject.NULL)
+            .put("userVerified", command.verifiedByUser)
+        if (commandLog.size >= 100) commandLog.removeFirst()
+        commandLog.addLast(entry)
+        runBlocking { remoteLogUploader.uploadLog(if (error == null) "INFO" else "WARN", "VehicleCommand", message, entry) }
     }
 
     private fun recoverPolling() {

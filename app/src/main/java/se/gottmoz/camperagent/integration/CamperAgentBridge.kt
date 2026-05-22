@@ -636,7 +636,6 @@ class CamperAgentBridge(context: Context) {
             .put("commandId", command.id)
             .put("displayName", command.displayName)
             .put("enabled", command.enabled)
-            .put("verifiedByUser", command.verifiedByUser)
             .put("tx", command.command)
             .put("rx", rx)
             .put("expectedPositiveResponse", command.expectedPositiveResponse ?: JSONObject.NULL)
@@ -672,7 +671,7 @@ class CamperAgentBridge(context: Context) {
             .put("rx", rx ?: JSONObject.NULL)
             .put("success", error == null)
             .put("error", error ?: JSONObject.NULL)
-            .put("userVerified", command.verifiedByUser)
+            .put("userEnabled", command.enabled)
         if (commandLog.size >= 100) commandLog.removeFirst()
         commandLog.addLast(entry)
         runBlocking { remoteLogUploader.uploadLog(if (error == null) "INFO" else "WARN", "VehicleCommand", message, entry) }

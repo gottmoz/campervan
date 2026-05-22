@@ -47,7 +47,7 @@ class VehicleCommandStore(context: Context) {
     }
 
     fun getJson(): JSONObject = JSONObject()
-        .put("profileName", "Ford Transit FORScan verified commands")
+        .put("profileName", "Ford Transit user enabled commands")
         .put("commands", VehicleCommandDefinition.toJsonArray(getCommands()))
         .put("readOnly", false)
 
@@ -61,7 +61,7 @@ class VehicleCommandStore(context: Context) {
     }
 
     fun exportJson(): JSONObject = JSONObject()
-        .put("profileName", "Ford Transit FORScan verified commands")
+        .put("profileName", "Ford Transit user enabled commands")
         .put("createdAt", nowIso())
         .put("commands", VehicleCommandDefinition.toJsonArray(getCommands()))
 

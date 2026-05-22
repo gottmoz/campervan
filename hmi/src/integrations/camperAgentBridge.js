@@ -20,15 +20,15 @@ function defaultPidMappings() {
 
 function defaultVehicleCommands() {
   return [
-    { id: "ac_on", enabled: false, displayName: "AC Compressor ON", description: "Paste FORScan-tested AC ON command.", category: "HVAC / AC", module: "PCM", setupCommands: ["ATSH7E0"], command: "", expectedPositiveResponse: "", verifiedByUser: false, verifiedSource: "FORScan", expectedStatusFunctionKey: "acCompressorStatus", expectedStatusValue: "01", cooldownMs: 1500, confirmBeforeSend: true },
-    { id: "ac_off", enabled: false, displayName: "AC Compressor OFF", description: "Paste FORScan-tested AC OFF command.", category: "HVAC / AC", module: "PCM", setupCommands: ["ATSH7E0"], command: "", expectedPositiveResponse: "", verifiedByUser: false, verifiedSource: "FORScan", expectedStatusFunctionKey: "acCompressorStatus", expectedStatusValue: "00", cooldownMs: 1500, confirmBeforeSend: true },
+    { id: "ac_on", enabled: false, displayName: "AC Compressor ON", description: "Paste tested AC ON command.", category: "HVAC / AC", module: "PCM", setupCommands: ["ATSH7E0"], command: "", expectedPositiveResponse: "", verifiedByUser: true, verifiedSource: "User enabled", expectedStatusFunctionKey: "acCompressorStatus", expectedStatusValue: "01", cooldownMs: 1500, confirmBeforeSend: true },
+    { id: "ac_off", enabled: false, displayName: "AC Compressor OFF", description: "Paste tested AC OFF command.", category: "HVAC / AC", module: "PCM", setupCommands: ["ATSH7E0"], command: "", expectedPositiveResponse: "", verifiedByUser: true, verifiedSource: "User enabled", expectedStatusFunctionKey: "acCompressorStatus", expectedStatusValue: "00", cooldownMs: 1500, confirmBeforeSend: true },
     ...[
       ["drive_mode_normal", "Normal", "00"],
       ["drive_mode_eco", "Eco", "06"],
       ["drive_mode_slippery", "Slippery", "05"],
       ["drive_mode_mud_ruts", "Mud & Ruts", "08"],
       ["drive_mode_tow_haul", "Tow / Haul", "03"],
-    ].map(([id, displayName, expectedStatusValue]) => ({ id, enabled: false, displayName, description: `Paste FORScan-tested ${displayName} drive mode command.`, category: "Driving Modes", module: "PCM", setupCommands: ["ATSH7E0"], command: "", expectedPositiveResponse: "", verifiedByUser: false, verifiedSource: "FORScan", expectedStatusFunctionKey: "driveMode", expectedStatusValue, cooldownMs: 1500, confirmBeforeSend: true })),
+    ].map(([id, displayName, expectedStatusValue]) => ({ id, enabled: false, displayName, description: `Paste tested ${displayName} drive mode command.`, category: "Driving Modes", module: "PCM", setupCommands: ["ATSH7E0"], command: "", expectedPositiveResponse: "", verifiedByUser: true, verifiedSource: "User enabled", expectedStatusFunctionKey: "driveMode", expectedStatusValue, cooldownMs: 1500, confirmBeforeSend: true })),
   ];
 }
 
@@ -96,15 +96,15 @@ const simulator = {
   importObdPidLibrary: (json) => simulator.saveObdPidMappings(json),
   testObdPidMapping: (mapping) => ({ tx: `${mapping.service || "01"}${mapping.pid || ""}`, rx: "simulated", decoded: { value: null, unit: mapping.unit }, readOnly: true }),
   getObdPidMappingStatus: () => ({ mappings: defaultPidMappings().filter((row) => row.enabled), lastValues: {}, pidErrorCounts: {}, pausedMs: {}, readOnly: true }),
-  getVehicleCommands: () => ({ profileName: "Ford Transit FORScan verified commands", commands: JSON.parse(localStorage.getItem("camper_vehicle_commands") || "null") || defaultVehicleCommands() }),
+  getVehicleCommands: () => ({ profileName: "Ford Transit user enabled commands", commands: JSON.parse(localStorage.getItem("camper_vehicle_commands") || "null") || defaultVehicleCommands() }),
   saveVehicleCommands: (json) => {
     localStorage.setItem("camper_vehicle_commands", JSON.stringify(json.commands || []));
-    return { profileName: "Ford Transit FORScan verified commands", commands: json.commands || [] };
+    return { profileName: "Ford Transit user enabled commands", commands: json.commands || [] };
   },
   saveVehicleCommand: (command) => {
     const commands = (JSON.parse(localStorage.getItem("camper_vehicle_commands") || "null") || defaultVehicleCommands()).map((row) => row.id === command.id ? command : row);
     localStorage.setItem("camper_vehicle_commands", JSON.stringify(commands));
-    return { profileName: "Ford Transit FORScan verified commands", commands };
+    return { profileName: "Ford Transit user enabled commands", commands };
   },
   executeVehicleCommand: (commandId) => ({ commandId, error: "Command execution unavailable in desktop simulator" }),
   testVehicleCommand: (command) => ({ commandId: command.id, tx: command.command, rx: "simulated", statusVerified: false }),
@@ -112,7 +112,7 @@ const simulator = {
   getSystemHealthSnapshot: () => ({ usb: { state: "Simulator" }, obd: { state: "Simulator" }, remoteLogging: { enabled: true }, tcan485: { state: "Simulator" }, lastUpdated: new Date().toISOString() }),
   getNetworkStatus: () => ({ android: { localIps: ["desktop"], activeConnectionType: "desktop" }, remoteLogging: { serverUrl: simulator.remoteUrl }, lastUpdated: new Date().toISOString() }),
   testInternetConnection: () => ({ online: true, statusCode: 204 }),
-  exportVehicleCommands: () => ({ profileName: "Ford Transit FORScan verified commands", createdAt: new Date().toISOString(), commands: defaultVehicleCommands() }),
+  exportVehicleCommands: () => ({ profileName: "Ford Transit user enabled commands", createdAt: new Date().toISOString(), commands: defaultVehicleCommands() }),
   importVehicleCommands: (json) => simulator.saveVehicleCommands(json),
   requestUsbPermission: (kind) => ({ kind, status: "simulated" }),
   scanUsbSerialDevices: () => ({ devices: [], status: { state: "NoDevice", permissionGranted: false, open: false } }),

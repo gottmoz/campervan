@@ -405,12 +405,11 @@ function VehicleDashboardView({ openIntegrationSettings }) {
     ["drive_mode_tow_haul", "Tow / Haul", "03"],
   ];
   const commandById = Object.fromEntries(commands.map((command) => [command.id, command]));
-  const commandReady = (id) => commandById[id]?.enabled && commandById[id]?.verifiedByUser && commandById[id]?.command;
+  const commandReady = (id) => commandById[id]?.enabled && commandById[id]?.command;
   const commandMissingReason = (id) => {
     const command = commandById[id];
     if (!command) return `${id} command is missing`;
     if (!command.enabled) return `${command.displayName || id} command is disabled`;
-    if (!command.verifiedByUser) return `${command.displayName || id} command is not marked FORScan verified`;
     if (!command.command) return `${command.displayName || id} command is empty`;
     return "";
   };
@@ -526,7 +525,7 @@ function VehicleAcTile({ acOn, readyOn, readyOff, sending, onPress, onConfigure 
 
 function VehicleSettingsPanel({ openIntegrationSettings }) {
   const rows = [
-    ["Vehicle Command Library", "Paste, verify and enable FORScan-tested AC and drive mode commands.", { type: "vehicleCommands", initialTab: "ac" }],
+    ["Vehicle Command Library", "Paste commands and enable AC or drive mode functions permanently.", { type: "vehicleCommands", initialTab: "ac" }],
     ["OBD PID Library", "Map dashboard values to Ford/standard PIDs, formulas and polling intervals.", "obdPidMapping"],
     ["Ford OBD / vLinker", "USB connection, protocol, raw tests and DTC read-only tools.", "obd"],
     ["Display / Screen Fit", "Adjust scale and vertical offset for the media unit.", "displayFit"],
@@ -535,7 +534,7 @@ function VehicleSettingsPanel({ openIntegrationSettings }) {
     <div className="grid min-h-0 grid-cols-[1fr_1fr] gap-4 border border-cyan-300/30 bg-slate-950/70 p-5 [clip-path:polygon(4%_0,96%_0,100%_12%,100%_88%,96%_100%,4%_100%,0_88%,0_12%)]">
       <div>
         <div className="text-2xl font-black uppercase tracking-[0.16em] text-cyan-200">Vehicle Settings</div>
-        <div className="mt-3 max-w-md text-sm font-semibold leading-6 text-slate-400">AC and drive mode buttons only send commands saved in the command library and marked FORScan-verified.</div>
+        <div className="mt-3 max-w-md text-sm font-semibold leading-6 text-slate-400">AC and drive mode buttons only send commands saved in the command library and permanently enabled by you.</div>
       </div>
       <div className="space-y-2">
         {rows.map(([title, sub, modal]) => (
@@ -1161,7 +1160,7 @@ function IntegrationsHealthModal({ onClose }) {
               <div className="mt-3 text-xs text-slate-300">status: {valueState(data)}</div>
               <div className="mt-3 text-xs text-slate-300">source: {data?.source || data?.driver || data?.serverUrl || "--"}</div>
               <div className="mt-3 text-xs text-slate-300">last error: {data?.lastError || data?.error || "--"}</div>
-              <div className="mt-3 text-xs text-slate-300">read/write: {card === "Ford OBD" ? "verified commands only" : "read-only"}</div>
+              <div className="mt-3 text-xs text-slate-300">read/write: {card === "Ford OBD" ? "user-enabled saved commands only" : "read-only"}</div>
             </div>
           ))}
           {healthError && <div className="rounded-3xl border border-rose-200/20 bg-rose-300/10 p-3 text-xs text-rose-100">{healthError}</div>}
@@ -1664,13 +1663,13 @@ function VehicleCommandLibraryModal({ onClose, initialTab = "ac" }) {
           <div className="mb-3 flex gap-2">
             {["ac", "drive", "custom", "log"].map((item) => <button key={item} onClick={() => setTab(item)} className={cx("rounded-xl px-3 py-2 text-xs font-black", tab === item ? "bg-cyan-300 text-slate-950" : "bg-white/[0.07] text-white")}>{item === "ac" ? "AC Commands" : item === "drive" ? "Drive Modes" : item === "log" ? "Execution Log" : "Custom"}</button>)}
           </div>
-          <div className="rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-xs font-bold text-amber-100">Only use commands you have verified in FORScan. Commands are logged before and after sending.</div>
+          <div className="rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-xs font-bold text-amber-100">Only enable commands you have tested yourself. Enabled saved commands are logged before and after sending.</div>
           <div className="mt-3 max-h-[330px] space-y-2 overflow-y-auto pr-1">
             {tab === "log" ? log.map((row, index) => <div key={index} className="rounded-xl bg-black/25 p-2 font-mono text-[10px] text-slate-300">{row.timestamp} {row.commandId} TX {row.tx || "--"} RX {row.rx || "--"} {row.error || ""}</div>) : visible.map((command) => (
-              <button key={command.id} onClick={() => setSelected(command)} className="grid w-full grid-cols-[1fr_70px_70px] items-center gap-2 rounded-2xl border border-white/10 bg-slate-950/55 px-3 py-2 text-left text-xs hover:bg-white/[0.08]">
+              <button key={command.id} onClick={() => setSelected(command)} className="grid w-full grid-cols-[1fr_70px_90px] items-center gap-2 rounded-2xl border border-white/10 bg-slate-950/55 px-3 py-2 text-left text-xs hover:bg-white/[0.08]">
                 <div><div className="font-black text-white">{command.displayName}</div><div className="text-slate-400">{command.module} {command.category}</div></div>
                 <div className={command.enabled ? "text-emerald-300" : "text-slate-500"}>{command.enabled ? "Enabled" : "Off"}</div>
-                <div className={command.verifiedByUser ? "text-cyan-200" : "text-amber-200"}>{command.verifiedByUser ? "Verified" : "Not verified"}</div>
+                <div className={command.command ? "text-cyan-200" : "text-amber-200"}>{command.command ? "Command OK" : "No command"}</div>
               </button>
             ))}
           </div>
@@ -1678,7 +1677,7 @@ function VehicleCommandLibraryModal({ onClose, initialTab = "ac" }) {
         <div className="h-full min-h-0 overflow-y-auto rounded-3xl border border-cyan-300/20 bg-slate-950/70 p-4">
           {selected ? <div className="space-y-2 text-xs">
             <label className="flex items-center gap-2 font-bold text-white"><input type="checkbox" checked={selected.enabled} onChange={(e) => updateSelected({ enabled: e.target.checked })} /> Enabled</label>
-            <label className="flex items-center gap-2 font-bold text-white"><input type="checkbox" checked={selected.verifiedByUser} onChange={(e) => updateSelected({ verifiedByUser: e.target.checked })} /> Verified in FORScan</label>
+            <div className="rounded-xl border border-amber-200/20 bg-amber-300/10 p-2 text-[11px] font-bold text-amber-100">Enabled means this saved command is permanently active until you turn it off here.</div>
             {["displayName", "category", "module", "command", "expectedPositiveResponse", "expectedStatusFunctionKey", "expectedStatusValue", "verifiedSource"].map((field) => (
               <label key={field} className="block text-slate-300">{field}<input value={selected[field] ?? ""} onChange={(e) => updateSelected({ [field]: e.target.value })} className="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 font-mono text-white" /></label>
             ))}
@@ -1693,9 +1692,9 @@ function VehicleCommandLibraryModal({ onClose, initialTab = "ac" }) {
               <button onClick={save} className="rounded-xl bg-cyan-300 px-3 py-2 font-black text-slate-950">Save</button>
             </div>
             <div className="rounded-xl border border-white/10 bg-black/25 p-2 font-mono text-[10px] text-slate-300">
-              <div>loaded enabled={String(selected.enabled)} verified={String(selected.verifiedByUser)}</div>
+              <div>loaded enabled={String(selected.enabled)}</div>
               <div>command={selected.command || "--"}</div>
-              <div>eligible={String(Boolean(selected.enabled && selected.verifiedByUser && selected.command))}</div>
+              <div>eligible={String(Boolean(selected.enabled && selected.command))}</div>
             </div>
             <div className="max-h-16 overflow-auto rounded-xl bg-black/25 p-2 font-mono text-[10px] text-cyan-100">{status || "No command sent"}</div>
           </div> : <div className="flex h-full items-center justify-center text-sm text-slate-400">Select a command</div>}
@@ -1786,7 +1785,7 @@ function SystemsView({ state, setters, openIntegrationSettings }) {
           {[
             ["Ford OBD / vLinker", "USB vLinker, ISO15765-4 CAN11/500, PIDs, DTC read-only", "obd"],
             ["OBD PID Library", "Read PIDs, formulas, polling and troubleshooting", "obdPidMapping"],
-            ["Vehicle Command Library", "FORScan-verified commands for AC and drive modes", "vehicleCommands"],
+            ["Vehicle Command Library", "User-enabled commands for AC and drive modes", "vehicleCommands"],
             ["Vehicle Dashboard", "Live gauges, vehicle display, mapped OBD values", null],
             ["T-CAN485 Gateway", "Android hotspot, UDP discovery, RS485 BMS gateway", "tcan485"],
             ["Battery / BMS", "12V 320Ah LiFePO4, 250A BMS, Bluetooth + CAN", "battery"],

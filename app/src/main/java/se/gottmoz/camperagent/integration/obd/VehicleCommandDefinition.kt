@@ -27,11 +27,10 @@ data class VehicleCommandDefinition(
     val lastError: String? = null,
     val lastSentEpochMs: Long? = null,
 ) {
-    fun canExecute(): Boolean = enabled && verifiedByUser && command.isNotBlank()
+    fun canExecute(): Boolean = enabled && command.isNotBlank()
 
     fun blockedReason(): String? = when {
         !enabled -> "$displayName command is disabled"
-        !verifiedByUser -> "$displayName command is not marked FORScan verified"
         command.isBlank() -> "$displayName command is empty"
         else -> null
     }
@@ -89,13 +88,13 @@ data class VehicleCommandDefinition(
         )
 
         fun defaults(): List<VehicleCommandDefinition> = listOf(
-            VehicleCommandDefinition("ac_on", displayName = "AC Compressor ON", description = "User can paste the FORScan-tested command to request AC/compressor ON.", category = "HVAC / AC", module = "PCM", setupCommands = listOf("ATSH7E0"), command = "", expectedStatusFunctionKey = "acCompressorStatus", expectedStatusValue = "01"),
-            VehicleCommandDefinition("ac_off", displayName = "AC Compressor OFF", description = "User can paste the FORScan-tested command to request AC/compressor OFF.", category = "HVAC / AC", module = "PCM", setupCommands = listOf("ATSH7E0"), command = "", expectedStatusFunctionKey = "acCompressorStatus", expectedStatusValue = "00"),
-            VehicleCommandDefinition("drive_mode_normal", displayName = "Normal", description = "FORScan-verified Normal drive mode command.", category = "Driving Modes", module = "PCM", setupCommands = listOf("ATSH7E0"), command = "", expectedStatusFunctionKey = "driveMode", expectedStatusValue = "00"),
-            VehicleCommandDefinition("drive_mode_eco", displayName = "Eco", description = "FORScan-verified Eco drive mode command.", category = "Driving Modes", module = "PCM", setupCommands = listOf("ATSH7E0"), command = "", expectedStatusFunctionKey = "driveMode", expectedStatusValue = "06"),
-            VehicleCommandDefinition("drive_mode_slippery", displayName = "Slippery", description = "FORScan-verified Slippery drive mode command.", category = "Driving Modes", module = "PCM", setupCommands = listOf("ATSH7E0"), command = "", expectedStatusFunctionKey = "driveMode", expectedStatusValue = "05"),
-            VehicleCommandDefinition("drive_mode_mud_ruts", displayName = "Mud & Ruts", description = "FORScan-verified Mud & Ruts drive mode command.", category = "Driving Modes", module = "PCM", setupCommands = listOf("ATSH7E0"), command = "", expectedStatusFunctionKey = "driveMode", expectedStatusValue = "08"),
-            VehicleCommandDefinition("drive_mode_tow_haul", displayName = "Tow / Haul", description = "FORScan-verified Tow / Haul drive mode command.", category = "Driving Modes", module = "PCM", setupCommands = listOf("ATSH7E0"), command = "", expectedStatusFunctionKey = "driveMode", expectedStatusValue = "03"),
+            VehicleCommandDefinition("ac_on", displayName = "AC Compressor ON", description = "User can paste the tested command to request AC/compressor ON.", category = "HVAC / AC", module = "PCM", setupCommands = listOf("ATSH7E0"), command = "", expectedStatusFunctionKey = "acCompressorStatus", expectedStatusValue = "01"),
+            VehicleCommandDefinition("ac_off", displayName = "AC Compressor OFF", description = "User can paste the tested command to request AC/compressor OFF.", category = "HVAC / AC", module = "PCM", setupCommands = listOf("ATSH7E0"), command = "", expectedStatusFunctionKey = "acCompressorStatus", expectedStatusValue = "00"),
+            VehicleCommandDefinition("drive_mode_normal", displayName = "Normal", description = "User-enabled Normal drive mode command.", category = "Driving Modes", module = "PCM", setupCommands = listOf("ATSH7E0"), command = "", expectedStatusFunctionKey = "driveMode", expectedStatusValue = "00"),
+            VehicleCommandDefinition("drive_mode_eco", displayName = "Eco", description = "User-enabled Eco drive mode command.", category = "Driving Modes", module = "PCM", setupCommands = listOf("ATSH7E0"), command = "", expectedStatusFunctionKey = "driveMode", expectedStatusValue = "06"),
+            VehicleCommandDefinition("drive_mode_slippery", displayName = "Slippery", description = "User-enabled Slippery drive mode command.", category = "Driving Modes", module = "PCM", setupCommands = listOf("ATSH7E0"), command = "", expectedStatusFunctionKey = "driveMode", expectedStatusValue = "05"),
+            VehicleCommandDefinition("drive_mode_mud_ruts", displayName = "Mud & Ruts", description = "User-enabled Mud & Ruts drive mode command.", category = "Driving Modes", module = "PCM", setupCommands = listOf("ATSH7E0"), command = "", expectedStatusFunctionKey = "driveMode", expectedStatusValue = "08"),
+            VehicleCommandDefinition("drive_mode_tow_haul", displayName = "Tow / Haul", description = "User-enabled Tow / Haul drive mode command.", category = "Driving Modes", module = "PCM", setupCommands = listOf("ATSH7E0"), command = "", expectedStatusFunctionKey = "driveMode", expectedStatusValue = "03"),
         )
 
         fun toJsonArray(commands: List<VehicleCommandDefinition>): JSONArray = JSONArray().also { array ->

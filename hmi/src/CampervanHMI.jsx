@@ -57,7 +57,7 @@ import { EngineDetailsView } from "./components/vehicle/EngineDetailsView";
 const VAN_BACKGROUND_URL = "assets/ford-transit-clean-bg.png";
 const DESIGN_WIDTH = 1080;
 const DESIGN_HEIGHT = 600;
-const MIN_AUTO_SCALE = 0.92;
+const MIN_AUTO_SCALE = 0.90;
 const DISPLAY_FIT_KEY = "camper_display_fit_settings";
 
 const DEFAULT_BMS = {
@@ -406,10 +406,18 @@ function VehicleDashboardView({ openIntegrationSettings }) {
   ];
   const commandById = Object.fromEntries(commands.map((command) => [command.id, command]));
   const commandReady = (id) => commandById[id]?.enabled && commandById[id]?.verifiedByUser && commandById[id]?.command;
+  const commandMissingReason = (id) => {
+    const command = commandById[id];
+    if (!command) return `${id} command is missing`;
+    if (!command.enabled) return `${command.displayName || id} command is disabled`;
+    if (!command.verifiedByUser) return `${command.displayName || id} command is not marked FORScan verified`;
+    if (!command.command) return `${command.displayName || id} command is empty`;
+    return "";
+  };
   const openCommandSettings = (tab = "drive") => openIntegrationSettings?.({ type: "vehicleCommands", initialTab: tab });
   const runCommand = async (id) => {
     if (!commandReady(id)) {
-      setCommandStatus("Command not configured");
+      setCommandStatus(commandMissingReason(id));
       openCommandSettings(id.startsWith("ac_") ? "ac" : "drive");
       return;
     }
@@ -1119,6 +1127,14 @@ function ObdSettingsModal({ onClose }) {
 
 function IntegrationsHealthModal({ onClose }) {
   const [diagnosticsResult, setDiagnosticsResult] = useState(null);
+  const [health, setHealth] = useState(null);
+  const [healthError, setHealthError] = useState("");
+  useEffect(() => {
+    camperAgentBridge.getSystemHealthSnapshot().then((result) => {
+      if (result.ok) setHealth(result.data);
+      else setHealthError(result.error || "Health snapshot failed");
+    });
+  }, []);
   async function exportDiagnostics() {
     const exported = await camperAgentBridge.exportIntegrationDiagnostics();
     let upload = null;
@@ -1130,7 +1146,26 @@ function IntegrationsHealthModal({ onClose }) {
   return (
     <ModalShell title="Integrations Health" subtitle="Adapters, permissions, last update, logs" icon={Wrench} onClose={onClose}>
       <div className="grid h-full grid-rows-[1fr_auto] gap-4">
-        <div className="grid grid-cols-5 gap-3">{["Battery BMS", "Victron", "Garmin/NMEA", "Ford OBD", "USB subsystem"].map((card) => <div key={card} className="rounded-3xl border border-white/10 bg-white/[0.045] p-3"><div className="text-base font-black text-white">{card}</div>{["status: Offline", "last packet: none", "stale age: n/a", "errors: 0", "source: simulator", "read-only: on"].map((line) => <div key={line} className="mt-3 text-xs text-slate-300">{line}</div>)}</div>)}</div>
+        <div className="grid grid-cols-4 gap-3">
+          {[
+            ["USB", health?.usb],
+            ["Ford OBD", health?.obd],
+            ["Remote Logging", health?.remoteLogging],
+            ["T-CAN485", health?.tcan485],
+            ["Battery BMS", health?.bms],
+            ["Victron", health?.victron],
+            ["Garmin/NMEA", health?.garmin],
+          ].map(([card, data]) => (
+            <div key={card} className="rounded-3xl border border-white/10 bg-white/[0.045] p-3">
+              <div className="text-base font-black text-white">{card}</div>
+              <div className="mt-3 text-xs text-slate-300">status: {valueState(data)}</div>
+              <div className="mt-3 text-xs text-slate-300">source: {data?.source || data?.driver || data?.serverUrl || "--"}</div>
+              <div className="mt-3 text-xs text-slate-300">last error: {data?.lastError || data?.error || "--"}</div>
+              <div className="mt-3 text-xs text-slate-300">read/write: {card === "Ford OBD" ? "verified commands only" : "read-only"}</div>
+            </div>
+          ))}
+          {healthError && <div className="rounded-3xl border border-rose-200/20 bg-rose-300/10 p-3 text-xs text-rose-100">{healthError}</div>}
+        </div>
         <div className="grid grid-cols-[auto_1fr] gap-3">
           <button onClick={exportDiagnostics} className="rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-black text-slate-950">Export diagnostics JSON</button>
           <div className="rounded-2xl border border-white/10 bg-black/20 p-3 text-xs text-slate-300">File: <span className="text-white">{diagnosticsPath}</span><br />Upload: <span className="text-white">{uploadText}</span></div>
@@ -1365,6 +1400,57 @@ function Tcan485GatewayModal({ onClose }) {
   );
 }
 
+function NetworkSettingsModal({ onClose }) {
+  const [status, setStatus] = useState(null);
+  const [message, setMessage] = useState("--");
+  const [tcanUrl, setTcanUrl] = useState("http://192.168.4.1");
+  useEffect(() => {
+    camperAgentBridge.getNetworkStatus().then((result) => {
+      if (result.ok) setStatus(result.data);
+      else setMessage(result.error || "Network status failed");
+    });
+  }, []);
+  async function testInternet() {
+    const result = await camperAgentBridge.testInternetConnection();
+    setMessage(result.ok && result.data.online ? "Internet OK" : result.error || "Internet offline");
+  }
+  async function testRemote() {
+    const result = await camperAgentBridge.testRemoteLoggingServer();
+    setMessage(result.ok ? "Remote logging server OK" : result.error || "Remote logging offline");
+  }
+  async function testTcan() {
+    const result = await camperAgentBridge.testTcan485Health(tcanUrl);
+    setMessage(result.ok ? "T-CAN485 health OK" : result.error || "T-CAN485 offline");
+  }
+  return (
+    <ModalFrame title="Network" onClose={onClose}>
+      <div className="grid h-full grid-cols-[1fr_1fr] gap-4">
+        <div className="space-y-3 rounded-3xl border border-white/10 bg-white/[0.045] p-4">
+          <div className="text-lg font-black text-white">Android network</div>
+          <div className="rounded-2xl bg-black/25 p-3 text-xs text-slate-300">Local IPs: {(status?.android?.localIps || []).join(", ") || "--"}</div>
+          <button onClick={testInternet} className="rounded-2xl bg-cyan-300 px-4 py-2 text-sm font-black text-slate-950">Test internet</button>
+          <button onClick={() => camperAgentBridge.openAndroidHotspotSettings().then((r) => setMessage(r.ok ? "Opened Android wireless settings" : r.error))} className="ml-2 rounded-2xl bg-white/[0.08] px-4 py-2 text-sm font-black text-white">Open hotspot settings</button>
+          <div className="rounded-2xl border border-amber-200/20 bg-amber-300/10 p-3 text-xs text-amber-100">Android hotspot keeps internet only when the head unit has SIM/4G/USB/Ethernet upstream.</div>
+        </div>
+        <div className="space-y-3 rounded-3xl border border-white/10 bg-white/[0.045] p-4">
+          <div className="text-lg font-black text-white">Remote / T-CAN485</div>
+          <button onClick={testRemote} className="rounded-2xl bg-white/[0.08] px-4 py-2 text-sm font-black text-white">Test Cloudflare logging</button>
+          <label className="block text-xs text-slate-300">T-CAN485 base URL<input value={tcanUrl} onChange={(e) => setTcanUrl(e.target.value)} className="mt-1 w-full rounded-xl bg-slate-900 px-3 py-2 text-white" /></label>
+          <button onClick={testTcan} className="rounded-2xl bg-cyan-300 px-4 py-2 text-sm font-black text-slate-950">Test T-CAN485 /health</button>
+          <div className="max-h-28 overflow-auto rounded-2xl bg-black/25 p-3 font-mono text-[10px] text-cyan-100">{message}</div>
+        </div>
+      </div>
+    </ModalFrame>
+  );
+}
+
+function valueState(value) {
+  if (value?.state) return value.state;
+  if (value?.connected) return "Connected";
+  if (value?.enabled === false) return "Disabled";
+  return "Unknown";
+}
+
 function ModalFrame({ title, onClose, children }) {
   return (
     <motion.div className="absolute inset-0 z-50 flex items-center justify-center bg-black/55 p-6 backdrop-blur-md" onClick={onClose} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
@@ -1381,6 +1467,17 @@ function ModalFrame({ title, onClose, children }) {
 
 function DisplayFitSettingsModal({ settings, scale, onSave, onClose }) {
   const [draft, setDraft] = useState(settings);
+  const [viewport, setViewport] = useState({ width: window.innerWidth || 1080, height: window.innerHeight || 600 });
+  useEffect(() => {
+    const update = () => setViewport({ width: window.innerWidth || 1080, height: window.innerHeight || 600 });
+    update();
+    window.addEventListener("resize", update);
+    window.addEventListener("orientationchange", update);
+    return () => {
+      window.removeEventListener("resize", update);
+      window.removeEventListener("orientationchange", update);
+    };
+  }, []);
   const update = (patch) => setDraft((current) => ({ ...current, ...patch }));
   const reset = () => setDraft({ autoFit: true, manualScale: 1, offsetY: 0 });
   return (
@@ -1397,7 +1494,8 @@ function DisplayFitSettingsModal({ settings, scale, onSave, onClose }) {
           </div>
           <div>
             <div className="mb-2 flex justify-between text-xs font-bold text-slate-300"><span>Vertical offset</span><span>{draft.offsetY ?? 0}px</span></div>
-            <input type="range" min="-40" max="40" step="1" value={draft.offsetY ?? 0} onChange={(e) => update({ offsetY: Number(e.target.value) })} className="w-full" />
+            <input type="range" min="-80" max="80" step="1" value={draft.offsetY ?? 0} onChange={(e) => update({ offsetY: Number(e.target.value) })} className="w-full" />
+            <div className="mt-1 text-[11px] text-slate-500">Positive offset moves the GUI down. Negative offset moves it up.</div>
           </div>
           <div className="flex gap-2">
             <button onClick={() => { onSave(draft); onClose(); }} className="rounded-2xl bg-cyan-300 px-4 py-2 text-sm font-black text-slate-950">Save</button>
@@ -1408,7 +1506,8 @@ function DisplayFitSettingsModal({ settings, scale, onSave, onClose }) {
           <div className="text-lg font-black text-white">Current fit</div>
           <div className="mt-3 space-y-2">
             <div>Design: 1080 x 600</div>
-            <div>Scale clamp: 0.92 - 1.00 in auto mode</div>
+            <div>Viewport: {viewport.width} x {viewport.height}</div>
+            <div>Auto scale: 1.00 at 600px+, 0.94 minimum between 560-599px, 0.90 minimum below 560px</div>
             <div>Current scale: {scale.toFixed(3)}</div>
             <div>Offset: {draft.offsetY ?? 0}px</div>
           </div>
@@ -1419,21 +1518,42 @@ function DisplayFitSettingsModal({ settings, scale, onSave, onClose }) {
 }
 
 function ObdPidMappingSettingsModal({ onClose }) {
-  const [tab, setTab] = useState("main");
+  const [tab, setTab] = useState("all");
   const [mappings, setMappings] = useState([]);
   const [selected, setSelected] = useState(null);
   const [status, setStatus] = useState("");
+  const [search, setSearch] = useState("");
+  const [moduleFilter, setModuleFilter] = useState("All");
+  const [enabledOnly, setEnabledOnly] = useState(false);
   const mainKeys = ["speedKph", "rpm", "coolantTempC", "oilTempC", "outsideTempC"];
-  const formulaPresets = ["A", "A-40", "((A*256)+B)", "((A*256)+B)/4", "((A*256)+B)/100", "((A*256)+B)/1000", "A*100/255", "A-125", "((A*256)+B)*0.05", "((A*256)+B)*2/100", "custom future"];
+  const formulaPresets = ["A", "A&1", "(A>>1)&1", "(A>>2)&1", "(A>>3)&1", "(A>>4)&1", "(A>>5)&1", "A-40", "((A*256)+B)", "((A*256)+B)/4", "((A*256)+B)/10", "((A*256)+B)/16", "((A*256)+B)/100", "((A*256)+B)/1000", "((A*256)+B)/32768", "((A*256)+B)/16384", "A*100/255", "A*100/128", "A-125", "((A*256)+B)*0.05", "((A*256)+B)*2/100", "custom future"];
 
   useEffect(() => {
-    camperAgentBridge.getObdPidMappings().then((result) => {
+    camperAgentBridge.getObdPidLibrary().then((result) => {
       if (result.ok) setMappings(result.data.mappings || []);
     });
   }, []);
 
-  const visible = mappings.filter((row) => tab === "main" ? mainKeys.includes(row.functionKey) : !mainKeys.includes(row.functionKey));
+  const modules = ["All", ...Array.from(new Set(mappings.map((row) => row.module || "PCM"))).sort()];
+  const visible = mappings.filter((row) => {
+    const text = `${row.label} ${row.functionKey} ${row.service}${row.pid} ${row.category} ${row.module}`.toLowerCase();
+    if (search && !text.includes(search.toLowerCase())) return false;
+    if (moduleFilter !== "All" && row.module !== moduleFilter) return false;
+    if (enabledOnly && !row.enabled) return false;
+    if (tab === "main") return mainKeys.includes(row.functionKey);
+    if (tab === "enabled") return row.enabled;
+    if (tab === "all") return true;
+    return !mainKeys.includes(row.functionKey);
+  });
   const updateSelected = (patch) => setSelected((current) => ({ ...current, ...patch }));
+  const toggleEnabled = async (row, enabled) => {
+    const result = await camperAgentBridge.setObdPidEnabled(row.functionKey, enabled);
+    if (result.ok) {
+      setMappings(result.data.mappings || []);
+      setSelected((current) => current?.functionKey === row.functionKey ? { ...current, enabled } : current);
+    }
+    setStatus(result.ok ? `${row.label}: ${enabled ? "enabled" : "disabled"}` : result.error);
+  };
   const saveSelected = async () => {
     const next = mappings.map((row) => row.functionKey === selected.functionKey ? selected : row);
     setMappings(next);
@@ -1455,13 +1575,21 @@ function ObdPidMappingSettingsModal({ onClose }) {
       <div className="grid h-full grid-cols-[1fr_340px] gap-4">
         <div className="min-h-0 rounded-3xl border border-white/10 bg-white/[0.04] p-4">
           <div className="mb-3 flex gap-2">
+            <button onClick={() => setTab("all")} className={cx("rounded-xl px-3 py-2 text-xs font-black", tab === "all" ? "bg-cyan-300 text-slate-950" : "bg-white/[0.07] text-white")}>All PIDs</button>
             <button onClick={() => setTab("main")} className={cx("rounded-xl px-3 py-2 text-xs font-black", tab === "main" ? "bg-cyan-300 text-slate-950" : "bg-white/[0.07] text-white")}>Main Dashboard</button>
             <button onClick={() => setTab("engine")} className={cx("rounded-xl px-3 py-2 text-xs font-black", tab === "engine" ? "bg-cyan-300 text-slate-950" : "bg-white/[0.07] text-white")}>Engine Details</button>
+            <button onClick={() => setTab("enabled")} className={cx("rounded-xl px-3 py-2 text-xs font-black", tab === "enabled" ? "bg-cyan-300 text-slate-950" : "bg-white/[0.07] text-white")}>Enabled</button>
             <button onClick={reset} className="ml-auto rounded-xl bg-white/[0.07] px-3 py-2 text-xs font-black text-white">Reset</button>
+          </div>
+          <div className="mb-3 grid grid-cols-[1fr_120px_90px] gap-2">
+            <input placeholder="Search PID, name, category..." value={search} onChange={(e) => setSearch(e.target.value)} className="rounded-xl bg-slate-900 px-3 py-2 text-xs text-white" />
+            <select value={moduleFilter} onChange={(e) => setModuleFilter(e.target.value)} className="rounded-xl bg-slate-900 px-2 py-2 text-xs text-white">{modules.map((module) => <option key={module}>{module}</option>)}</select>
+            <label className="flex items-center gap-2 rounded-xl bg-white/[0.06] px-2 text-[11px] font-bold text-white"><input type="checkbox" checked={enabledOnly} onChange={(e) => setEnabledOnly(e.target.checked)} /> Enabled</label>
           </div>
           <div className="max-h-[395px] space-y-2 overflow-y-auto pr-1">
             {visible.map((row) => (
-              <button key={row.functionKey} onClick={() => setSelected(row)} className="grid w-full grid-cols-[1fr_70px_80px_70px] items-center gap-2 rounded-2xl border border-white/10 bg-slate-950/55 px-3 py-2 text-left text-xs hover:bg-white/[0.08]">
+              <button key={row.functionKey} onClick={() => setSelected(row)} className="grid w-full grid-cols-[28px_1fr_70px_80px_70px] items-center gap-2 rounded-2xl border border-white/10 bg-slate-950/55 px-3 py-2 text-left text-xs hover:bg-white/[0.08]">
+                <input type="checkbox" checked={Boolean(row.enabled)} onChange={(e) => { e.stopPropagation(); toggleEnabled(row, e.target.checked); }} onClick={(e) => e.stopPropagation()} />
                 <div><div className="font-black text-white">{row.label}</div><div className="text-slate-400">{row.mode}</div></div>
                 <div className={row.enabled ? "text-emerald-300" : "text-slate-500"}>{row.enabled ? "Enabled" : "Off"}</div>
                 <div className="font-mono text-cyan-200">{row.service}{row.pid}</div>
@@ -1513,11 +1641,13 @@ function VehicleCommandLibraryModal({ onClose, initialTab = "ac" }) {
   const visible = commands.filter((command) => tab === "ac" ? command.category === "HVAC / AC" : tab === "drive" ? command.category === "Driving Modes" : true);
   const updateSelected = (patch) => setSelected((current) => ({ ...current, ...patch }));
   const save = async () => {
-    const next = commands.map((command) => command.id === selected.id ? selected : command);
-    setCommands(next);
-    const result = await camperAgentBridge.saveVehicleCommands({ commands: next });
-    if (result.ok) window.dispatchEvent(new Event("camper-vehicle-commands-updated"));
-    setStatus(result.ok ? "Saved command library" : result.error);
+    const result = await camperAgentBridge.saveVehicleCommand(selected);
+    if (result.ok) {
+      setCommands(result.data.commands || []);
+      setSelected((result.data.commands || []).find((command) => command.id === selected.id) || selected);
+      window.dispatchEvent(new Event("camper-vehicle-commands-updated"));
+    }
+    setStatus(result.ok ? "Saved command" : result.error);
   };
   const test = async () => {
     const result = await camperAgentBridge.testVehicleCommand(selected);
@@ -1561,6 +1691,11 @@ function VehicleCommandLibraryModal({ onClose, initialTab = "ac" }) {
               <button onClick={test} className="rounded-xl bg-white/[0.08] px-3 py-2 font-black text-white">Test</button>
               <button onClick={execute} className="rounded-xl bg-amber-300 px-3 py-2 font-black text-slate-950">Send</button>
               <button onClick={save} className="rounded-xl bg-cyan-300 px-3 py-2 font-black text-slate-950">Save</button>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-black/25 p-2 font-mono text-[10px] text-slate-300">
+              <div>loaded enabled={String(selected.enabled)} verified={String(selected.verifiedByUser)}</div>
+              <div>command={selected.command || "--"}</div>
+              <div>eligible={String(Boolean(selected.enabled && selected.verifiedByUser && selected.command))}</div>
             </div>
             <div className="max-h-16 overflow-auto rounded-xl bg-black/25 p-2 font-mono text-[10px] text-cyan-100">{status || "No command sent"}</div>
           </div> : <div className="flex h-full items-center justify-center text-sm text-slate-400">Select a command</div>}
@@ -1635,8 +1770,8 @@ function SystemsView({ state, setters, openIntegrationSettings }) {
           <ToggleRow icon={CarFront} label="Drive mode interlock" sub="Disable pump/inverter while driving" on={state.interlock} setOn={setters.setInterlock} />
           <ToggleRow icon={Wifi} label="Remote access" sub="MQTT cloud bridge" on={state.remote} setOn={setters.setRemote} />
         </div>
-        <div className="mt-5 rounded-3xl bg-emerald-300/10 p-4 text-sm text-emerald-100 ring-1 ring-emerald-200/20">
-          Diagnostics OK: 23 nodes online, 0 critical faults, last sync 18 seconds ago.
+        <div className="mt-5 rounded-3xl bg-cyan-300/10 p-4 text-sm text-cyan-100 ring-1 ring-cyan-200/20">
+          Open Integration Health for live USB, OBD, remote logging and T-CAN485 status.
         </div>
       </GlassCard>
       <GlassCard className="p-5">
@@ -1662,7 +1797,7 @@ function SystemsView({ state, setters, openIntegrationSettings }) {
             ["Remote Logging / Cloudflare", "Live logs, diagnostics upload, tunnel status", "remoteLogging"],
             ["Display / Screen Fit", "Scale and vertical offset for the Android media unit", "displayFit"],
             ["Integration Health", "Adapters, permissions, last update, logs", "health"],
-            ["Network", "Wi-Fi, Bluetooth, hotspot, MQTT broker"],
+            ["Network", "Wi-Fi, hotspot, Cloudflare and T-CAN485 health", "network"],
             ["Service", "Logs, firmware, backup, factory reset"],
           ].map(([title, sub, modal]) => (
             <button key={title} onClick={() => modal && openIntegrationSettings(modal)} className="flex w-full items-center justify-between rounded-2xl border border-white/10 bg-white/[0.055] px-4 py-3 text-left hover:bg-white/[0.09]">
@@ -1721,8 +1856,10 @@ export default function CampervanHMI() {
     const updateScale = () => {
       const availableWidth = window.innerWidth || DESIGN_WIDTH;
       const availableHeight = window.innerHeight || DESIGN_HEIGHT;
-      const rawScale = Math.min(availableWidth / DESIGN_WIDTH, availableHeight / DESIGN_HEIGHT, 1);
-      const safeScale = displayFit.autoFit ? Math.max(rawScale, MIN_AUTO_SCALE) : Number(displayFit.manualScale || 1);
+      const heightScale = availableHeight >= DESIGN_HEIGHT ? 1 : availableHeight >= 560 ? Math.max(availableHeight / DESIGN_HEIGHT, 0.94) : Math.max(availableHeight / DESIGN_HEIGHT, MIN_AUTO_SCALE);
+      const widthScale = Math.min(availableWidth / DESIGN_WIDTH, 1);
+      const rawScale = Math.min(widthScale, heightScale, 1);
+      const safeScale = displayFit.autoFit ? rawScale : Number(displayFit.manualScale || 1);
       setHmiScale(Math.min(1, Math.max(0.9, safeScale)));
     };
     updateScale();
@@ -1851,6 +1988,7 @@ export default function CampervanHMI() {
           {(integrationModal?.type || integrationModal) === "vehicleCommands" && <VehicleCommandLibraryModal initialTab={integrationModal?.initialTab || "ac"} onClose={() => setIntegrationModal(null)} />}
           {(integrationModal?.type || integrationModal) === "displayFit" && <DisplayFitSettingsModal settings={displayFit} scale={hmiScale} onSave={saveDisplayFit} onClose={() => setIntegrationModal(null)} />}
           {(integrationModal?.type || integrationModal) === "health" && <IntegrationsHealthModal onClose={() => setIntegrationModal(null)} />}
+          {(integrationModal?.type || integrationModal) === "network" && <NetworkSettingsModal onClose={() => setIntegrationModal(null)} />}
         </AnimatePresence>
         </div>
       </div>

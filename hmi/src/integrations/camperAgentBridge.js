@@ -78,11 +78,22 @@ const simulator = {
   getObdSettings: () => ({ enabled: false, adapterType: "Auto", baudRate: null, protocol: "AUTO", readOnly: true }),
   saveObdSettings: (json) => ({ ...json, readOnly: true }),
   getObdPidMappings: () => ({ profile: "Ford Transit EcoBlue 2.0 2016 - Default", mappings: defaultPidMappings(), readOnly: true }),
+  getObdPidLibrary: () => simulator.getObdPidMappings(),
   saveObdPidMappings: (json) => {
     localStorage.setItem("camper_obd_pid_mappings", JSON.stringify(json.mappings || []));
     return { profile: "Ford Transit EcoBlue 2.0 2016 - Default", mappings: json.mappings || [], readOnly: true };
   },
+  saveObdPidLibrary: (json) => simulator.saveObdPidMappings(json),
+  setObdPidEnabled: (id, enabled) => {
+    const current = JSON.parse(localStorage.getItem("camper_obd_pid_mappings") || "null") || defaultPidMappings();
+    const mappings = current.map((row) => row.functionKey === id ? { ...row, enabled } : row);
+    localStorage.setItem("camper_obd_pid_mappings", JSON.stringify(mappings));
+    return { profile: "Ford Transit EcoBlue 2.0 2016 - Default", mappings, readOnly: true };
+  },
   resetObdPidMappingsToDefault: () => ({ profile: "Ford Transit EcoBlue 2.0 2016 - Default", mappings: defaultPidMappings(), readOnly: true }),
+  resetObdPidLibraryDefaults: () => simulator.resetObdPidMappingsToDefault(),
+  exportObdPidLibrary: () => simulator.getObdPidMappings(),
+  importObdPidLibrary: (json) => simulator.saveObdPidMappings(json),
   testObdPidMapping: (mapping) => ({ tx: `${mapping.service || "01"}${mapping.pid || ""}`, rx: "simulated", decoded: { value: null, unit: mapping.unit }, readOnly: true }),
   getObdPidMappingStatus: () => ({ mappings: defaultPidMappings().filter((row) => row.enabled), lastValues: {}, pidErrorCounts: {}, pausedMs: {}, readOnly: true }),
   getVehicleCommands: () => ({ profileName: "Ford Transit FORScan verified commands", commands: JSON.parse(localStorage.getItem("camper_vehicle_commands") || "null") || defaultVehicleCommands() }),
@@ -90,9 +101,17 @@ const simulator = {
     localStorage.setItem("camper_vehicle_commands", JSON.stringify(json.commands || []));
     return { profileName: "Ford Transit FORScan verified commands", commands: json.commands || [] };
   },
+  saveVehicleCommand: (command) => {
+    const commands = (JSON.parse(localStorage.getItem("camper_vehicle_commands") || "null") || defaultVehicleCommands()).map((row) => row.id === command.id ? command : row);
+    localStorage.setItem("camper_vehicle_commands", JSON.stringify(commands));
+    return { profileName: "Ford Transit FORScan verified commands", commands };
+  },
   executeVehicleCommand: (commandId) => ({ commandId, error: "Command execution unavailable in desktop simulator" }),
   testVehicleCommand: (command) => ({ commandId: command.id, tx: command.command, rx: "simulated", statusVerified: false }),
   getVehicleCommandLog: () => ({ log: [] }),
+  getSystemHealthSnapshot: () => ({ usb: { state: "Simulator" }, obd: { state: "Simulator" }, remoteLogging: { enabled: true }, tcan485: { state: "Simulator" }, lastUpdated: new Date().toISOString() }),
+  getNetworkStatus: () => ({ android: { localIps: ["desktop"], activeConnectionType: "desktop" }, remoteLogging: { serverUrl: simulator.remoteUrl }, lastUpdated: new Date().toISOString() }),
+  testInternetConnection: () => ({ online: true, statusCode: 204 }),
   exportVehicleCommands: () => ({ profileName: "Ford Transit FORScan verified commands", createdAt: new Date().toISOString(), commands: defaultVehicleCommands() }),
   importVehicleCommands: (json) => simulator.saveVehicleCommands(json),
   requestUsbPermission: (kind) => ({ kind, status: "simulated" }),
@@ -244,15 +263,25 @@ export const camperAgentBridge = {
   getObdSettings: () => call("getObdSettings"),
   saveObdSettings: (settings) => call("saveObdSettings", { ...settings, readOnly: true }),
   getObdPidMappings: () => call("getObdPidMappings"),
+  getObdPidLibrary: () => call("getObdPidLibrary"),
   saveObdPidMappings: (settings) => call("saveObdPidMappings", settings),
+  saveObdPidLibrary: (settings) => call("saveObdPidLibrary", settings),
+  setObdPidEnabled: (id, enabled) => call("setObdPidEnabled", id, String(enabled)),
   resetObdPidMappingsToDefault: () => call("resetObdPidMappingsToDefault"),
+  resetObdPidLibraryDefaults: () => call("resetObdPidLibraryDefaults"),
+  exportObdPidLibrary: () => call("exportObdPidLibrary"),
+  importObdPidLibrary: (settings) => call("importObdPidLibrary", settings),
   testObdPidMapping: (mapping) => call("testObdPidMapping", mapping),
   getObdPidMappingStatus: () => call("getObdPidMappingStatus"),
   getVehicleCommands: () => call("getVehicleCommands"),
   saveVehicleCommands: (settings) => call("saveVehicleCommands", settings),
+  saveVehicleCommand: (command) => call("saveVehicleCommand", command),
   executeVehicleCommand: (commandId) => call("executeVehicleCommand", commandId),
   testVehicleCommand: (command) => call("testVehicleCommand", command),
   getVehicleCommandLog: () => call("getVehicleCommandLog"),
+  getSystemHealthSnapshot: () => call("getSystemHealthSnapshot"),
+  getNetworkStatus: () => call("getNetworkStatus"),
+  testInternetConnection: () => call("testInternetConnection"),
   exportVehicleCommands: () => call("exportVehicleCommands"),
   importVehicleCommands: (settings) => call("importVehicleCommands", settings),
   requestUsbPermission: (kind) => call("requestUsbPermission", kind),

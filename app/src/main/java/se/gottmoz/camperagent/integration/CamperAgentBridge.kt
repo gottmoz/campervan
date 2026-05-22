@@ -23,6 +23,10 @@ import se.gottmoz.camperagent.integration.tcan485.TCan485Repository
 import se.gottmoz.camperagent.integration.tcan485.TCan485SettingsStore
 import se.gottmoz.camperagent.integration.usbserial.UsbSerialManager
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.Inet4Address
+import java.net.NetworkInterface
+import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -148,11 +152,28 @@ class CamperAgentBridge(context: Context) {
     @JavascriptInterface fun scanUsbSerialDevices(): String = ok(JSONObject().put("devices", usbSerialManager.enumerateJson()).put("status", usbSerialManager.statusJson()))
     @JavascriptInterface fun getUsbPermissionStatus(): String = ok(usbSerialManager.currentPermissionStatus().let { usbSerialManager.statusJson() })
     @JavascriptInterface fun getObdPidMappings(): String = ok(obdPidMappingStore.getJson())
+    @JavascriptInterface fun getObdPidLibrary(): String = ok(obdPidMappingStore.getJson())
     @JavascriptInterface fun saveObdPidMappings(json: String): String = handle { obdPidMappingStore.save(validatedJson(json)) }
+    @JavascriptInterface fun saveObdPidLibrary(json: String): String = handle { obdPidMappingStore.save(validatedJson(json)) }
+    @JavascriptInterface fun setObdPidEnabled(id: String, enabled: String): String = handle {
+        val enabledValue = enabled.equals("true", ignoreCase = true)
+        val result = obdPidMappingStore.setEnabled(id, enabledValue)
+        runBlocking { remoteLogUploader.uploadLog("INFO", "ObdPidLibrary", "PID ${if (enabledValue) "enabled" else "disabled"}", JSONObject().put("id", id).put("enabled", enabledValue)) }
+        result
+    }
     @JavascriptInterface fun resetObdPidMappingsToDefault(): String = ok(obdPidMappingStore.reset())
+    @JavascriptInterface fun resetObdPidLibraryDefaults(): String = ok(obdPidMappingStore.reset())
+    @JavascriptInterface fun exportObdPidLibrary(): String = ok(obdPidMappingStore.getJson())
+    @JavascriptInterface fun importObdPidLibrary(json: String): String = handle { obdPidMappingStore.save(validatedJson(json)) }
     @JavascriptInterface fun getObdPidMappingStatus(): String = ok(pidMappingStatusJson())
     @JavascriptInterface fun getVehicleCommands(): String = ok(vehicleCommandStore.getJson())
     @JavascriptInterface fun saveVehicleCommands(json: String): String = handle { vehicleCommandStore.save(validatedJson(json)) }
+    @JavascriptInterface fun saveVehicleCommand(json: String): String = handle {
+        val command = VehicleCommandDefinition.fromJson(validatedJson(json))
+        val result = vehicleCommandStore.saveCommand(command)
+        runBlocking { remoteLogUploader.uploadLog("INFO", "VehicleCommand", "command saved", command.toJson()) }
+        result
+    }
     @JavascriptInterface fun exportVehicleCommands(): String = ok(vehicleCommandStore.exportJson())
     @JavascriptInterface fun importVehicleCommands(json: String): String = handle { vehicleCommandStore.save(validatedJson(json)) }
     @JavascriptInterface fun getVehicleCommandLog(): String = ok(JSONObject().put("log", JSONArray(commandLog.toList())))
@@ -161,6 +182,9 @@ class CamperAgentBridge(context: Context) {
         val command = vehicleCommandStore.find(commandId) ?: error("Unknown vehicle command: $commandId")
         executeVehicleCommandDefinition(command, persist = true)
     }
+    @JavascriptInterface fun getSystemHealthSnapshot(): String = ok(systemHealthSnapshot())
+    @JavascriptInterface fun getNetworkStatus(): String = ok(networkStatusJson())
+    @JavascriptInterface fun testInternetConnection(): String = handle { httpHealth("https://www.google.com/generate_204", false) }
     @JavascriptInterface fun testObdPidMapping(json: String): String = handle {
         val mapping = ObdPidMapping.fromJson(validatedJson(json))
         require(mapping.service.isNotBlank() && mapping.pid.isNotBlank()) { "Service and PID are required" }
@@ -491,14 +515,12 @@ class CamperAgentBridge(context: Context) {
 
     private fun startObdPolling(supportedPids: Set<String>) {
         if (obdPolling) return
-        val mappings = obdPidMappingStore.enabledMappings()
+        val initialMappings = obdPidMappingStore.enabledMappings()
             .ifEmpty { ObdPidMapping.defaults().filter { it.enabled && it.pid.isNotBlank() } }
-        val fastMappings = mappings.filter { it.pollIntervalMs <= 1_000 }
-        val mediumMappings = mappings.filter { it.pollIntervalMs > 1_000 }
         obdPolling = true
         obdState = "Polling"
         runBlocking {
-            remoteLogUploader.uploadLog("INFO", "ObdRepository", "polling start", JSONObject().put("pids", JSONArray(mappings.map { it.pid }.distinct())))
+            remoteLogUploader.uploadLog("INFO", "ObdRepository", "polling start", JSONObject().put("pids", JSONArray(initialMappings.map { it.pid }.distinct())))
         }
         Thread {
             var nextFast = 0L
@@ -507,11 +529,13 @@ class CamperAgentBridge(context: Context) {
             var recoveryAttempted = false
             while (obdPolling && usbSerialManager.status.value.open) {
                 val now = System.currentTimeMillis()
+                val mappings = obdPidMappingStore.enabledMappings()
+                    .ifEmpty { ObdPidMapping.defaults().filter { it.enabled && it.pid.isNotBlank() } }
                 if (now >= nextFast) {
-                    fastMappings.forEach { pollMapping(it) }
+                    mappings.filter { it.pollIntervalMs <= 1_000 }.forEach { pollMapping(it) }
                     nextFast = now + 750
                 }
-                mediumMappings.forEach { mapping ->
+                mappings.filter { it.pollIntervalMs > 1_000 }.forEach { mapping ->
                     val next = nextByFunction[mapping.functionKey] ?: 0L
                     if (now >= next) {
                         pollMapping(mapping)
@@ -582,16 +606,21 @@ class CamperAgentBridge(context: Context) {
 
     private fun executeVehicleCommandDefinition(command: VehicleCommandDefinition, persist: Boolean): JSONObject {
         if (!obdConnected || !usbSerialManager.status.value.open) {
-            logVehicleCommand("Vehicle command blocked - OBD not connected", command, null, null, "OBD is not connected and verified")
-            error("OBD is not connected and verified")
+            val reason = if (!obdConnected) "obd not connected" else "serial not open"
+            logVehicleCommand("Vehicle command blocked - $reason", command, null, null, reason)
+            error(reason)
         }
-        if (!command.canExecute()) {
-            logVehicleCommand("Vehicle command blocked - not verified", command, null, null, "Command is not enabled and FORScan-verified.")
-            error("Command is not enabled and FORScan-verified.")
+        command.blockedReason()?.let { reason ->
+            logVehicleCommand("Vehicle command blocked - $reason", command, null, null, reason)
+            error(reason)
         }
         val lastSent = command.lastSentEpochMs ?: 0L
         val cooldownLeft = command.cooldownMs - (System.currentTimeMillis() - lastSent)
-        if (cooldownLeft > 0) error("Command cooldown active for ${cooldownLeft}ms")
+        if (cooldownLeft > 0) {
+            val reason = "cooldown active for ${cooldownLeft}ms"
+            logVehicleCommand("Vehicle command blocked - $reason", command, null, null, reason)
+            error(reason)
+        }
         command.setupCommands.forEach { setup ->
             if (setup.isNotBlank()) sendObdCommand(setup, 1_500, "VehicleCommandSetup")
         }
@@ -606,8 +635,14 @@ class CamperAgentBridge(context: Context) {
         return JSONObject()
             .put("commandId", command.id)
             .put("displayName", command.displayName)
+            .put("enabled", command.enabled)
+            .put("verifiedByUser", command.verifiedByUser)
             .put("tx", command.command)
             .put("rx", rx)
+            .put("expectedPositiveResponse", command.expectedPositiveResponse ?: JSONObject.NULL)
+            .put("expectedStatusFunctionKey", command.expectedStatusFunctionKey ?: JSONObject.NULL)
+            .put("expectedStatusValue", command.expectedStatusValue ?: JSONObject.NULL)
+            .put("verificationResult", verified)
             .put("statusVerified", verified)
             .put("error", error ?: JSONObject.NULL)
             .put("readOnly", false)
@@ -671,7 +706,20 @@ class CamperAgentBridge(context: Context) {
             .put("boostBar", JSONObject.NULL)
             .put("egtTempC", JSONObject.NULL)
             .put("dpfSootPercent", JSONObject.NULL)
-        mappedValues.forEach { (key, value) -> telemetry.put(key, value) }
+        val genericValues = JSONObject()
+        mappedValues.forEach { (key, value) ->
+            telemetry.put(key, value)
+            val mapping = obdPidMappingStore.getMappings().firstOrNull { it.functionKey == key }
+            genericValues.put(key, JSONObject()
+                .put("functionKey", key)
+                .put("displayName", mapping?.label ?: key)
+                .put("value", value)
+                .put("unit", mapping?.unit ?: "")
+                .put("sourcePidId", mapping?.functionKey ?: JSONObject.NULL)
+                .put("status", if ((pidErrorCounts[key] ?: 0) > 0) "Warning" else "Online")
+                .put("updatedAtEpochMs", if (lastObdSuccessEpochMs > 0) lastObdSuccessEpochMs else JSONObject.NULL))
+        }
+        telemetry.put("values", genericValues)
         return usbSerialManager.statusJson()
             .put("state", if (obdConnected) obdState else usbSerialManager.status.value.state.name)
             .put("connected", obdConnected)
@@ -701,6 +749,55 @@ class CamperAgentBridge(context: Context) {
             .put("pidErrorCounts", JSONObject(pidErrorCounts.toMap()))
             .put("pausedMs", paused)
             .put("readOnly", true)
+    }
+
+    private fun systemHealthSnapshot(): JSONObject {
+        val usb = usbSerialManager.statusJson()
+        val remote = remoteLogUploader.settings()
+        val tcan = tcan485Repository.snapshot()
+        return JSONObject()
+            .put("usb", usb)
+            .put("obd", vehicleTelemetrySnapshot())
+            .put("remoteLogging", remote)
+            .put("tcan485", tcan)
+            .put("bms", JSONObject().put("state", repository.batteryBmsSnapshot().optJSONObject("telemetry")?.optString("source", "unknown") ?: "unknown").put("source", "battery_bms_repository"))
+            .put("victron", JSONObject().put("enabled", settingsStore.getVictronSettings().optBoolean("enabled")).put("state", "Disconnected").put("source", "settings"))
+            .put("garmin", JSONObject().put("enabled", settingsStore.getGarminSettings().optBoolean("enabled")).put("state", canDiscoveryRepository.snapshot().optString("state", "Stopped")).put("source", "can_discovery"))
+            .put("lastUpdated", nowIso())
+    }
+
+    private fun networkStatusJson(): JSONObject = JSONObject()
+        .put("android", JSONObject()
+            .put("sdk", Build.VERSION.SDK_INT)
+            .put("localIps", JSONArray(localIps()))
+            .put("activeConnectionType", "android_network"))
+        .put("remoteLogging", remoteLogUploader.settings())
+        .put("tcan485", tcan485Repository.snapshot())
+        .put("lastUpdated", nowIso())
+
+    private fun httpHealth(rawUrl: String, expectJson: Boolean): JSONObject {
+        val connection = (URL(rawUrl).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 3_000
+            readTimeout = 5_000
+            requestMethod = "GET"
+        }
+        return try {
+            val code = connection.responseCode
+            val body = runCatching { connection.inputStream.bufferedReader().readText() }.getOrDefault("")
+            JSONObject()
+                .put("url", rawUrl)
+                .put("online", code in 200..299)
+                .put("statusCode", code)
+                .put("body", if (expectJson) body.take(2_000) else body.take(200))
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun localIps(): List<String> = NetworkInterface.getNetworkInterfaces().toList().flatMap { iface ->
+        iface.inetAddresses.toList().mapNotNull { addr ->
+            if (!addr.isLoopbackAddress && addr is Inet4Address) addr.hostAddress else null
+        }
     }
 
     private fun obdConnectedJson(message: String, lastTx: String, lastRx: String): JSONObject = JSONObject()

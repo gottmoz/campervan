@@ -29,6 +29,13 @@ data class VehicleCommandDefinition(
 ) {
     fun canExecute(): Boolean = enabled && verifiedByUser && command.isNotBlank()
 
+    fun blockedReason(): String? = when {
+        !enabled -> "$displayName command is disabled"
+        !verifiedByUser -> "$displayName command is not marked FORScan verified"
+        command.isBlank() -> "$displayName command is empty"
+        else -> null
+    }
+
     fun toJson(): JSONObject = JSONObject()
         .put("id", id)
         .put("enabled", enabled)

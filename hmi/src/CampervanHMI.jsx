@@ -383,7 +383,7 @@ function HomeView({ state, setters, openEnergyStats }) {
   );
 }
 
-function VehicleDashboardView() {
+function VehicleDashboardView({ openIntegrationSettings }) {
   const [page, setPage] = useState("dashboard");
   const [snapshot, setSnapshot] = useState(null);
   const [commands, setCommands] = useState([]);
@@ -406,9 +406,11 @@ function VehicleDashboardView() {
   ];
   const commandById = Object.fromEntries(commands.map((command) => [command.id, command]));
   const commandReady = (id) => commandById[id]?.enabled && commandById[id]?.verifiedByUser && commandById[id]?.command;
+  const openCommandSettings = (tab = "drive") => openIntegrationSettings?.({ type: "vehicleCommands", initialTab: tab });
   const runCommand = async (id) => {
     if (!commandReady(id)) {
       setCommandStatus("Command not configured");
+      openCommandSettings(id.startsWith("ac_") ? "ac" : "drive");
       return;
     }
     setSendingCommand(id);
@@ -429,9 +431,12 @@ function VehicleDashboardView() {
   }, []);
 
   useEffect(() => {
-    camperAgentBridge.getVehicleCommands().then((result) => {
+    const loadCommands = () => camperAgentBridge.getVehicleCommands().then((result) => {
       if (result.ok) setCommands(result.data.commands || []);
     });
+    loadCommands();
+    window.addEventListener("camper-vehicle-commands-updated", loadCommands);
+    return () => window.removeEventListener("camper-vehicle-commands-updated", loadCommands);
   }, []);
 
   useEffect(() => {
@@ -480,14 +485,15 @@ function VehicleDashboardView() {
               <VehicleTempCard label="Coolant Temp" value={data.coolantTempC} min={40} max={120} warning={100} icon="?" stale={stale} />
               <VehicleTempCard label="Oil Temp" value={oilValue} min={40} max={130} warning={115} icon="?" subtext={oilValue == null ? "Not available" : undefined} simulated={isSimulated && oilValue != null} stale={stale} />
               <VehicleTempCard label="Outside Temp" value={outsideValue} min={-30} max={50} warning={45} icon="?" subtext={outsideValue == null ? "Not available" : undefined} stale={stale} />
-              <VehicleAcTile acOn={acOn} readyOn={commandReady("ac_on")} readyOff={commandReady("ac_off")} sending={sendingCommand === "ac_on" || sendingCommand === "ac_off"} onPress={() => runCommand(acOn ? "ac_off" : "ac_on")} />
+              <VehicleAcTile acOn={acOn} readyOn={commandReady("ac_on")} readyOff={commandReady("ac_off")} sending={sendingCommand === "ac_on" || sendingCommand === "ac_off"} onPress={() => runCommand(acOn ? "ac_off" : "ac_on")} onConfigure={() => openCommandSettings("ac")} />
               <VehicleChargeTile data={data} />
             </div>
           </div>
         )}
 
         {page === "engine" && <EngineDetailsView snapshot={snapshot} />}
-        {page !== "dashboard" && page !== "engine" && <div className="flex items-center justify-center border border-cyan-300/30 bg-slate-950/70 text-2xl font-black uppercase tracking-[0.18em] text-cyan-200 [clip-path:polygon(4%_0,96%_0,100%_12%,100%_88%,96%_100%,4%_100%,0_88%,0_12%)]">{page} page pending</div>}
+        {page === "settings" && <VehicleSettingsPanel openIntegrationSettings={openIntegrationSettings} />}
+        {page !== "dashboard" && page !== "engine" && page !== "settings" && <div className="flex items-center justify-center border border-cyan-300/30 bg-slate-950/70 text-2xl font-black uppercase tracking-[0.18em] text-cyan-200 [clip-path:polygon(4%_0,96%_0,100%_12%,100%_88%,96%_100%,4%_100%,0_88%,0_12%)]">{page} page pending</div>}
 
         <VehicleBottomNav active={page} setActive={setPage} />
       </div>
@@ -495,16 +501,42 @@ function VehicleDashboardView() {
   );
 }
 
-function VehicleAcTile({ acOn, readyOn, readyOff, sending, onPress }) {
+function VehicleAcTile({ acOn, readyOn, readyOff, sending, onPress, onConfigure }) {
   const ready = acOn ? readyOff : readyOn;
+  const handleClick = () => ready ? onPress() : onConfigure?.();
   return (
     <div className="relative overflow-hidden border border-cyan-300/40 bg-slate-950/80 p-3 shadow-xl shadow-cyan-500/20 [clip-path:polygon(8%_0,92%_0,100%_18%,100%_82%,92%_100%,8%_100%,0_82%,0_18%)]">
       <div className="text-xs font-black uppercase tracking-[0.14em] text-cyan-200">AC</div>
       <div className="mt-1 text-3xl font-black text-white">{acOn ? "ON" : "OFF"}</div>
-      <button onClick={onPress} disabled={!ready || sending} className="mt-2 w-full rounded-xl bg-cyan-300 px-2 py-1.5 text-[10px] font-black text-slate-950 disabled:bg-white/[0.08] disabled:text-slate-500">
+      <button onClick={handleClick} disabled={sending} className="mt-2 w-full rounded-xl bg-cyan-300 px-2 py-1.5 text-[10px] font-black text-slate-950 disabled:bg-white/[0.08] disabled:text-slate-500">
         {ready ? sending ? "Sending..." : acOn ? "AC OFF" : "AC ON" : "Configure AC command"}
       </button>
       <div className="mt-1 text-[9px] font-bold text-slate-500">PCM 22099B status</div>
+    </div>
+  );
+}
+
+function VehicleSettingsPanel({ openIntegrationSettings }) {
+  const rows = [
+    ["Vehicle Command Library", "Paste, verify and enable FORScan-tested AC and drive mode commands.", { type: "vehicleCommands", initialTab: "ac" }],
+    ["OBD PID Library", "Map dashboard values to Ford/standard PIDs, formulas and polling intervals.", "obdPidMapping"],
+    ["Ford OBD / vLinker", "USB connection, protocol, raw tests and DTC read-only tools.", "obd"],
+    ["Display / Screen Fit", "Adjust scale and vertical offset for the media unit.", "displayFit"],
+  ];
+  return (
+    <div className="grid min-h-0 grid-cols-[1fr_1fr] gap-4 border border-cyan-300/30 bg-slate-950/70 p-5 [clip-path:polygon(4%_0,96%_0,100%_12%,100%_88%,96%_100%,4%_100%,0_88%,0_12%)]">
+      <div>
+        <div className="text-2xl font-black uppercase tracking-[0.16em] text-cyan-200">Vehicle Settings</div>
+        <div className="mt-3 max-w-md text-sm font-semibold leading-6 text-slate-400">AC and drive mode buttons only send commands saved in the command library and marked FORScan-verified.</div>
+      </div>
+      <div className="space-y-2">
+        {rows.map(([title, sub, modal]) => (
+          <button key={title} onClick={() => openIntegrationSettings?.(modal)} className="w-full rounded-2xl border border-cyan-300/20 bg-white/[0.055] px-4 py-3 text-left hover:bg-cyan-300/10">
+            <div className="text-sm font-black text-white">{title}</div>
+            <div className="text-xs text-slate-400">{sub}</div>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1464,8 +1496,8 @@ function ObdPidMappingSettingsModal({ onClose }) {
   );
 }
 
-function VehicleCommandLibraryModal({ onClose }) {
-  const [tab, setTab] = useState("ac");
+function VehicleCommandLibraryModal({ onClose, initialTab = "ac" }) {
+  const [tab, setTab] = useState(initialTab);
   const [commands, setCommands] = useState([]);
   const [selected, setSelected] = useState(null);
   const [status, setStatus] = useState("");
@@ -1484,6 +1516,7 @@ function VehicleCommandLibraryModal({ onClose }) {
     const next = commands.map((command) => command.id === selected.id ? selected : command);
     setCommands(next);
     const result = await camperAgentBridge.saveVehicleCommands({ commands: next });
+    if (result.ok) window.dispatchEvent(new Event("camper-vehicle-commands-updated"));
     setStatus(result.ok ? "Saved command library" : result.error);
   };
   const test = async () => {
@@ -1760,7 +1793,7 @@ export default function CampervanHMI() {
   const view = useMemo(() => {
     switch (activeTab) {
       case "vehicle":
-        return <VehicleDashboardView />;
+        return <VehicleDashboardView openIntegrationSettings={setIntegrationModal} />;
       case "power":
         return <PowerView state={state} setters={setters} openEnergyStats={() => setShowEnergyStats(true)} />;
       case "climate":
@@ -1807,17 +1840,17 @@ export default function CampervanHMI() {
         </div>
         <AnimatePresence>{showEnergyStats && <EnergyStatsModal onClose={() => setShowEnergyStats(false)} />}</AnimatePresence>
         <AnimatePresence>
-          {integrationModal === "battery" && <BatteryBmsSettingsModal onClose={() => setIntegrationModal(null)} />}
-          {integrationModal === "canbus" && <CanBusScannerModal onClose={() => setIntegrationModal(null)} />}
-          {integrationModal === "remoteLogging" && <RemoteLoggingSettingsModal onClose={() => setIntegrationModal(null)} />}
-          {integrationModal === "tcan485" && <Tcan485GatewayModal onClose={() => setIntegrationModal(null)} />}
-          {integrationModal === "victron" && <VictronSettingsModal onClose={() => setIntegrationModal(null)} />}
-          {integrationModal === "garmin" && <GarminSettingsModal onClose={() => setIntegrationModal(null)} />}
-          {integrationModal === "obd" && <ObdSettingsModal onClose={() => setIntegrationModal(null)} />}
-          {integrationModal === "obdPidMapping" && <ObdPidMappingSettingsModal onClose={() => setIntegrationModal(null)} />}
-          {integrationModal === "vehicleCommands" && <VehicleCommandLibraryModal onClose={() => setIntegrationModal(null)} />}
-          {integrationModal === "displayFit" && <DisplayFitSettingsModal settings={displayFit} scale={hmiScale} onSave={saveDisplayFit} onClose={() => setIntegrationModal(null)} />}
-          {integrationModal === "health" && <IntegrationsHealthModal onClose={() => setIntegrationModal(null)} />}
+          {(integrationModal?.type || integrationModal) === "battery" && <BatteryBmsSettingsModal onClose={() => setIntegrationModal(null)} />}
+          {(integrationModal?.type || integrationModal) === "canbus" && <CanBusScannerModal onClose={() => setIntegrationModal(null)} />}
+          {(integrationModal?.type || integrationModal) === "remoteLogging" && <RemoteLoggingSettingsModal onClose={() => setIntegrationModal(null)} />}
+          {(integrationModal?.type || integrationModal) === "tcan485" && <Tcan485GatewayModal onClose={() => setIntegrationModal(null)} />}
+          {(integrationModal?.type || integrationModal) === "victron" && <VictronSettingsModal onClose={() => setIntegrationModal(null)} />}
+          {(integrationModal?.type || integrationModal) === "garmin" && <GarminSettingsModal onClose={() => setIntegrationModal(null)} />}
+          {(integrationModal?.type || integrationModal) === "obd" && <ObdSettingsModal onClose={() => setIntegrationModal(null)} />}
+          {(integrationModal?.type || integrationModal) === "obdPidMapping" && <ObdPidMappingSettingsModal onClose={() => setIntegrationModal(null)} />}
+          {(integrationModal?.type || integrationModal) === "vehicleCommands" && <VehicleCommandLibraryModal initialTab={integrationModal?.initialTab || "ac"} onClose={() => setIntegrationModal(null)} />}
+          {(integrationModal?.type || integrationModal) === "displayFit" && <DisplayFitSettingsModal settings={displayFit} scale={hmiScale} onSave={saveDisplayFit} onClose={() => setIntegrationModal(null)} />}
+          {(integrationModal?.type || integrationModal) === "health" && <IntegrationsHealthModal onClose={() => setIntegrationModal(null)} />}
         </AnimatePresence>
         </div>
       </div>

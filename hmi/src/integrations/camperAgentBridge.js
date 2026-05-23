@@ -166,6 +166,27 @@ const simulator = {
       lastError: null,
     };
   },
+  getEnergyFlowSnapshot: () => {
+    const t = Date.now() / 1000;
+    const currentA = Math.round(18 + Math.sin(t * 0.25) * 6);
+    const voltage = Math.round((14.2 + Math.sin(t * 0.3) * 0.15) * 10) / 10;
+    const duty = Math.round(42 + Math.sin(t * 0.2) * 8);
+    return {
+      updatedAtEpochMs: Date.now(),
+      sources: {
+        shore: { watts: 0, active: false, connected: false, totalKwhToday: 0, source: "placeholder" },
+        solar: { watts: 0, active: false, totalKwhToday: 0, source: "placeholder" },
+        generator: { watts: currentA * voltage, currentA, voltage, alternatorDutyPercent: duty, active: true, totalKwhToday: 0, source: "simulator" },
+        battery: { label: "LiFePO4 320Ah", socPercent: 87, voltage: 13.2, currentA: -18, watts: -238, source: "simulator" },
+      },
+      consumers: {
+        cabinAc: { label: "AC Bodel", watts: 0, active: false },
+        dieselHeater: { label: "Dieselvärmare", watts: 18, active: true },
+        lighting: { label: "Belysning", watts: 42, active: true },
+      },
+      totals: { shoreKwhToday: 0, solarKwhToday: 0, generatorKwhToday: 0, totalChargeKwhToday: 0 },
+    };
+  },
   sendReadOnlyObdCommand: (command) => ({ command, queued: false, readOnly: true }),
   scanSupportedPids: () => ({ commands: ["0100", "0120", "0140", "0160"], readOnly: true }),
   readDtcReadOnly: () => ({ command: "03", dtcs: [], readOnly: true }),
@@ -296,6 +317,7 @@ export const camperAgentBridge = {
   disconnectObd: () => call("disconnectObd"),
   getObdConnectionStatus: () => call("getObdConnectionStatus"),
   getVehicleTelemetrySnapshot: () => call("getVehicleTelemetrySnapshot"),
+  getEnergyFlowSnapshot: () => call("getEnergyFlowSnapshot"),
   sendReadOnlyObdCommand: (command) => call("sendReadOnlyObdCommand", command),
   scanSupportedPids: () => call("scanSupportedPids"),
   readDtcReadOnly: () => call("readDtcReadOnly"),

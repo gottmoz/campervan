@@ -58,6 +58,26 @@ const VAN_BACKGROUND_URL = "assets/ford-transit-clean-bg.png";
 const DESIGN_WIDTH = 1080;
 const DESIGN_HEIGHT = 600;
 const MIN_AUTO_SCALE = 0.90;
+const ENERGY_TOTALS_KEY = "camper_energy_totals_v1";
+
+function energyTodayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function loadEnergyTotals() {
+  const fallback = { today: energyTodayKey(), shoreKwh: 0, solarKwh: 0, generatorKwh: 0, lastUpdateEpochMs: Date.now() };
+  try {
+    const parsed = JSON.parse(localStorage.getItem(ENERGY_TOTALS_KEY) || "null");
+    if (!parsed || parsed.today !== fallback.today) return fallback;
+    return { ...fallback, ...parsed };
+  } catch {
+    return fallback;
+  }
+}
+
+function saveEnergyTotals(totals) {
+  localStorage.setItem(ENERGY_TOTALS_KEY, JSON.stringify(totals));
+}
 const DISPLAY_FIT_KEY = "camper_display_fit_settings";
 
 const DEFAULT_BMS = {
@@ -572,77 +592,196 @@ function VehicleChargeTile({ data }) {
 function PowerView({ state, setters, openEnergyStats }) {
   const bms = state.batteryBms?.telemetry ?? {};
   const batterySoc = Math.round(bms.socPercent ?? state.battery);
+  const [snapshot, setSnapshot] = useState(null);
+  const [totals, setTotals] = useState(loadEnergyTotals);
+
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      const response = await camperAgentBridge.getEnergyFlowSnapshot();
+      if (alive && response?.ok) setSnapshot(response.data);
+    };
+    load();
+    const timer = setInterval(load, 2000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, []);
+
+  const liveGenerator = snapshot?.sources?.generator ?? {};
+  const generatorCurrentA = Number(liveGenerator.currentA);
+  const vehicleBatteryVoltage = Number(liveGenerator.voltage);
+  const alternatorDutyPercent = Number(liveGenerator.alternatorDutyPercent);
+  const validGeneratorCurrent = Number.isFinite(generatorCurrentA) && Math.abs(generatorCurrentA) <= 300;
+  const validGeneratorVoltage = Number.isFinite(vehicleBatteryVoltage) && vehicleBatteryVoltage >= 8 && vehicleBatteryVoltage <= 18;
+  const generatorWatts = validGeneratorCurrent && validGeneratorVoltage ? generatorCurrentA * vehicleBatteryVoltage : null;
+  const generatorActive = (validGeneratorCurrent && generatorCurrentA > 5) || (validGeneratorVoltage && vehicleBatteryVoltage > 13.2);
+  const lightingWatts = Math.round(((state.lightMain ?? 0) + (state.lightKitchen ?? 0) + (state.lightBed ?? 0) + (state.lightAwning ?? 0)) * 0.6);
+  const dieselHeaterWatts = state.heater ? 18 : 0;
+  const batteryWatts = Number.isFinite(Number(bms.powerWatts)) ? Number(bms.powerWatts) : null;
+  const batteryCurrent = Number.isFinite(Number(bms.current)) ? Number(bms.current) : null;
+  const batteryVoltage = Number.isFinite(Number(bms.voltage)) ? Number(bms.voltage) : 13.2;
+
+  const energyFlow = {
+    sources: {
+      shore: { label: "Shore", watts: Number(snapshot?.sources?.shore?.watts ?? 0), active: Number(snapshot?.sources?.shore?.watts ?? 0) > 20, totalKwh: totals.shoreKwh, source: snapshot?.sources?.shore?.source ?? "placeholder" },
+      solar: { label: "Solar", watts: Number(snapshot?.sources?.solar?.watts ?? 0), active: Number(snapshot?.sources?.solar?.watts ?? 0) > 10, totalKwh: totals.solarKwh, source: snapshot?.sources?.solar?.source ?? "placeholder" },
+      generator: { label: "Generator", watts: generatorWatts, currentA: validGeneratorCurrent ? generatorCurrentA : null, voltage: validGeneratorVoltage ? vehicleBatteryVoltage : null, alternatorDutyPercent: Number.isFinite(alternatorDutyPercent) ? alternatorDutyPercent : null, active: generatorActive, totalKwh: totals.generatorKwh, source: liveGenerator.source ?? "placeholder" },
+      battery: { label: "LiFePO4 320Ah", socPercent: batterySoc, voltage: batteryVoltage, currentA: batteryCurrent, watts: batteryWatts, active: true, source: bms.source ? "bms" : "bms_or_placeholder" },
+    },
+    consumers: {
+      cabinAc: { label: "AC Bodel", watts: 0, active: false },
+      dieselHeater: { label: "Dieselvärmare", watts: dieselHeaterWatts, active: dieselHeaterWatts > 0 },
+      lighting: { label: "Belysning", watts: lightingWatts, active: lightingWatts > 0 },
+    },
+  };
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setTotals((current) => {
+        const now = Date.now();
+        const base = current.today === energyTodayKey() ? current : { today: energyTodayKey(), shoreKwh: 0, solarKwh: 0, generatorKwh: 0, lastUpdateEpochMs: now };
+        const deltaHours = Math.min(Math.max(now - (base.lastUpdateEpochMs || now), 0), 15000) / 3600000;
+        const generatorDelta = energyFlow.sources.generator.source === "obd" && Number.isFinite(energyFlow.sources.generator.watts) && energyFlow.sources.generator.watts > 0
+          ? (energyFlow.sources.generator.watts * deltaHours) / 1000
+          : 0;
+        const next = { ...base, generatorKwh: base.generatorKwh + generatorDelta, lastUpdateEpochMs: now };
+        saveEnergyTotals(next);
+        return next;
+      });
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [energyFlow.sources.generator.source, energyFlow.sources.generator.watts]);
+
+  const totalChargeKwh = totals.shoreKwh + totals.solarKwh + totals.generatorKwh;
   return (
-    <div className="grid h-full grid-cols-[0.9fr_1.1fr] gap-4">
-      <GlassCard className="p-5">
-        <CircularGauge value={batterySoc} label="LiFePO4 320Ah" unit="%" icon={BatteryCharging} />
-        <div className="mt-1 text-sm text-slate-400">320Ah / 250A BMS</div>
-        <div className="mt-5 space-y-3">
-          <RangeControl label="Charge limit" value={setters.chargeLimit ?? 90} setValue={setters.setChargeLimit} min={50} max={100} unit="%" icon={BatteryCharging} />
-          <ToggleRow icon={PlugZap} label="230V Inverter" sub="Pure sine / outlet group A" on={state.inverter} setOn={setters.setInverter} />
-          <ToggleRow icon={SolarPanel} label="Solar priority" sub="Prefer solar before alternator" on={state.solarPriority} setOn={setters.setSolarPriority} />
+    <div className="grid h-full grid-rows-[auto_1fr] gap-3">
+      <div className="flex items-center justify-between rounded-3xl border border-white/10 bg-white/[0.045] px-5 py-3">
+        <div>
+          <div className="text-2xl font-black text-white">Energy Flow</div>
+          <div className="text-sm text-slate-400">Shore, solar, generator and LiFePO4 320Ah to camper loads</div>
         </div>
-      </GlassCard>
-      <div className="grid grid-rows-[auto_1fr] gap-4">
-        <div className="grid grid-cols-4 gap-3">
-          <MiniStatus icon={SolarPanel} label="PV Input" value="326 W" sub="24.8V" />
-          <MiniStatus icon={CarFront} label="Renogy 40A" value="0 W" sub="Engine off" />
-          <MiniStatus icon={PlugZap} label="Shore" value="No" sub="Disconnected" />
-          <MiniStatus icon={Zap} label="Output" value="184 W" sub="Stable" />
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setters.setInverter?.(!state.inverter)}
+            className={cx("rounded-full px-5 py-2 text-sm font-black", state.inverter ? "bg-emerald-300 text-slate-950" : "bg-white/[0.08] text-slate-200")}
+          >
+            Inverter {state.inverter ? "On" : "Off"}
+          </button>
+          <button onClick={openEnergyStats} className="rounded-full bg-cyan-300 px-5 py-2 text-sm font-black text-slate-950">Charge stats</button>
         </div>
-        <GlassCard className="p-5">
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <div className="text-xl font-black text-white">Energy flow</div>
-              <div className="text-sm text-slate-400">Animated system diagram for solar, charger, battery and loads</div>
-            </div>
-            <button className="rounded-full bg-cyan-300 px-4 py-2 text-sm font-black text-slate-950">Optimize</button>
-          </div>
-          <div className="relative h-[292px] rounded-3xl border border-white/10 bg-black/20 p-5">
-            <button onClick={openEnergyStats} className="absolute left-8 top-10 z-20 text-left transition hover:scale-[1.03] active:scale-[0.99]">
-              <FlowNode className="relative left-auto top-auto" icon={SolarPanel} label="Solar" value="326 W / stats" />
-            </button>
-            <FlowNode className="left-8 bottom-10" icon={PlugZap} label="Shore" value="0 W" muted />
-            <FlowNode className="left-[310px] top-[102px]" icon={BatteryCharging} label="LiFePO4 320Ah" value={`${batterySoc}%`} primary />
-            <FlowNode className="right-8 top-10" icon={Refrigerator} label="Fridge" value="42 W" />
-            <FlowNode className="right-8 bottom-10" icon={LampCeiling} label="Cabin" value="38 W" />
-            <AnimatedLine x1="170px" y1="72px" x2="310px" y2="137px" />
-            <AnimatedLine x1="170px" y1="222px" x2="310px" y2="155px" muted />
-            <AnimatedLine x1="470px" y1="137px" x2="625px" y2="72px" />
-            <AnimatedLine x1="470px" y1="155px" x2="625px" y2="222px" />
-          </div>
-        </GlassCard>
+      </div>
+
+      <div className="grid min-h-0 grid-cols-[1fr_220px] gap-3">
+        <EnergyFlowDiagram energyFlow={energyFlow} />
+        <ChargeTotalsPanel
+          totals={{ ...totals, totalChargeKwh }}
+          onReset={() => {
+            const next = { today: energyTodayKey(), shoreKwh: 0, solarKwh: 0, generatorKwh: 0, lastUpdateEpochMs: Date.now() };
+            saveEnergyTotals(next);
+            setTotals(next);
+          }}
+        />
+      </div>
+
+    </div>
+  );
+}
+
+function EnergyFlowDiagram({ energyFlow }) {
+  const { sources, consumers } = energyFlow;
+  const externalActive = sources.shore.active || sources.solar.active || sources.generator.active;
+  return (
+    <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-black/25">
+      <svg className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 760 360" preserveAspectRatio="none">
+        <EnergyFlowLine x1={145} y1={58} x2={305} y2={150} active={sources.shore.active} color="#a78bfa" />
+        <EnergyFlowLine x1={145} y1={180} x2={305} y2={180} active={sources.solar.active} color="#22d3ee" />
+        <EnergyFlowLine x1={145} y1={302} x2={305} y2={210} active={sources.generator.active} color="#fbbf24" />
+        <EnergyFlowLine x1={455} y1={180} x2={585} y2={180} active={externalActive || Object.values(consumers).some((load) => load.active)} color="#67e8f9" />
+        <EnergyFlowLine x1={520} y1={180} x2={608} y2={58} active={consumers.cabinAc.active} color="#67e8f9" muted={!consumers.cabinAc.active} />
+        <EnergyFlowLine x1={520} y1={180} x2={608} y2={180} active={consumers.dieselHeater.active} color="#67e8f9" muted={!consumers.dieselHeater.active} />
+        <EnergyFlowLine x1={520} y1={180} x2={608} y2={302} active={consumers.lighting.active} color="#67e8f9" muted={!consumers.lighting.active} />
+      </svg>
+      <EnergyNode className="left-5 top-5" icon={PlugZap} label="Shore" value={`${Math.round(sources.shore.watts)} W`} sub={sources.shore.active ? "Charging" : "Disconnected"} active={sources.shore.active} source={sources.shore.source} />
+      <EnergyNode className="left-5 top-1/2 -translate-y-1/2" icon={SolarPanel} label="Solar" value={`${Math.round(sources.solar.watts)} W`} sub={sources.solar.active ? "MPPT active" : "Waiting for MPPT"} active={sources.solar.active} source={sources.solar.source} />
+      <EnergyNode className="bottom-5 left-5" icon={CarFront} label="Generator" value={Number.isFinite(sources.generator.watts) ? `${Math.round(sources.generator.watts)} W` : "--"} sub={sources.generator.currentA != null ? `${Math.round(sources.generator.currentA)} A · ${Math.round(sources.generator.alternatorDutyPercent ?? 0)}% duty` : "Waiting for OBD"} active={sources.generator.active} source={sources.generator.source} warning={sources.generator.watts == null && sources.generator.source !== "placeholder" ? "Decode error" : ""} />
+      <EnergyNode className="left-1/2 top-1/2 w-[160px] -translate-x-1/2 -translate-y-1/2" icon={BatteryCharging} label="LiFePO4 320Ah" value={`${sources.battery.socPercent}%`} sub={`${sources.battery.voltage.toFixed(1)}V · DC Bus`} active primary source={sources.battery.source} />
+      <EnergyNode className="right-5 top-5" icon={Snowflake} label="AC Bodel" value={`${Math.round(consumers.cabinAc.watts)} W`} sub={consumers.cabinAc.active ? "On" : "Off"} active={consumers.cabinAc.active} />
+      <EnergyNode className="right-5 top-1/2 -translate-y-1/2" icon={Flame} label="Dieselvärmare" value={`${Math.round(consumers.dieselHeater.watts)} W`} sub={consumers.dieselHeater.active ? "On" : "Off"} active={consumers.dieselHeater.active} />
+      <EnergyNode className="bottom-5 right-5" icon={LampCeiling} label="Belysning" value={`${Math.round(consumers.lighting.watts)} W`} sub={consumers.lighting.active ? "Active" : "Off"} active={consumers.lighting.active} />
+    </div>
+  );
+}
+
+function EnergyNode({ icon: Icon, label, value, sub, className, primary, active, source, warning }) {
+  return (
+    <div className={cx("absolute z-10 w-[126px] rounded-2xl border p-3", primary ? "border-cyan-200/40 bg-cyan-300/15" : active ? "border-cyan-200/25 bg-white/[0.075]" : "border-white/10 bg-white/[0.035] opacity-70", className)}>
+      <div className="flex items-center justify-between">
+        <Icon className={primary ? "text-cyan-100" : active ? "text-cyan-200" : "text-slate-400"} size={20} />
+        {source && source !== "obd" && source !== "bms" && <span className="rounded-full bg-white/10 px-1.5 py-0.5 text-[8px] font-black uppercase text-slate-300">sim</span>}
+      </div>
+      <div className="mt-1 truncate text-[12px] font-black text-white">{label}</div>
+      <div className="text-sm font-black text-cyan-50">{value}</div>
+      <div className={cx("truncate text-[10px]", warning ? "text-amber-200" : "text-slate-400")}>{warning || sub}</div>
+    </div>
+  );
+}
+
+function EnergyFlowLine({ x1, y1, x2, y2, active, muted, color = "#67e8f9" }) {
+  return (
+    <motion.line
+      x1={x1}
+      y1={y1}
+      x2={x2}
+      y2={y2}
+      stroke={muted || !active ? "rgba(148,163,184,0.20)" : color}
+      strokeWidth={active ? 4 : 2}
+      strokeLinecap="round"
+      strokeDasharray="10 12"
+      animate={active ? { strokeDashoffset: [0, -44] } : { strokeDashoffset: 0 }}
+      transition={{ duration: 1.2, repeat: active ? Infinity : 0, ease: "linear" }}
+      style={{ filter: active ? `drop-shadow(0 0 8px ${color})` : "none" }}
+    />
+  );
+}
+
+function ChargeTotalsPanel({ totals, onReset }) {
+  const exportTotals = () => {
+    const blob = new Blob([JSON.stringify(totals, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `camper-energy-totals-${energyTodayKey()}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+  return (
+    <div className="rounded-3xl border border-white/10 bg-black/25 p-4">
+      <div className="text-sm font-black text-white">Charge totals</div>
+      <div className="mt-1 text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Today</div>
+      <div className="mt-4 space-y-2 text-sm">
+        <TotalRow label="Shore" value={totals.shoreKwh} />
+        <TotalRow label="Solar" value={totals.solarKwh} />
+        <TotalRow label="Generator" value={totals.generatorKwh} />
+        <div className="border-t border-white/10 pt-2">
+          <TotalRow label="Total in" value={totals.totalChargeKwh} strong />
+        </div>
+      </div>
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <button onClick={onReset} className="rounded-xl bg-white/[0.07] px-2 py-2 text-[10px] font-black text-slate-200 hover:bg-white/[0.12]">Reset</button>
+        <button onClick={exportTotals} className="rounded-xl bg-cyan-300/15 px-2 py-2 text-[10px] font-black text-cyan-100 hover:bg-cyan-300/25">Export</button>
       </div>
     </div>
   );
 }
 
-function FlowNode({ icon: Icon, label, value, className, primary, muted }) {
+function TotalRow({ label, value, strong }) {
   return (
-    <div className={cx("absolute z-10 w-[150px] rounded-3xl border p-4", primary ? "border-cyan-200/30 bg-cyan-300/15" : muted ? "border-white/10 bg-white/[0.035] opacity-60" : "border-white/10 bg-white/[0.07]", className)}>
-      <Icon className={primary ? "text-cyan-100" : "text-cyan-200"} size={24} />
-      <div className="mt-2 text-sm font-bold text-white">{label}</div>
-      <div className="text-xs text-slate-400">{value}</div>
+    <div className="flex items-center justify-between">
+      <span className={strong ? "font-black text-white" : "text-slate-400"}>{label}</span>
+      <span className={strong ? "font-black text-cyan-100" : "font-bold text-white"}>{Number(value || 0).toFixed(2)} kWh</span>
     </div>
-  );
-}
-
-function AnimatedLine({ x1, y1, x2, y2, muted }) {
-  return (
-    <svg className="absolute inset-0 h-full w-full">
-      <motion.line
-        x1={x1}
-        y1={y1}
-        x2={x2}
-        y2={y2}
-        stroke={muted ? "rgba(148,163,184,0.25)" : "rgba(103,232,249,0.62)"}
-        strokeWidth="4"
-        strokeLinecap="round"
-        strokeDasharray="10 12"
-        animate={{ strokeDashoffset: [0, -44] }}
-        transition={{ duration: 1.2, repeat: Infinity, ease: "linear" }}
-      />
-    </svg>
   );
 }
 
@@ -809,24 +948,23 @@ function LightsView({ state, setters }) {
 
 function EnergyStatsModal({ onClose }) {
   const chargeData = [
-    { day: "Mon", solar: 2.8, landline: 0.0, renogy: 0.4, orion: 0.2, battery: 74 },
-    { day: "Tue", solar: 3.4, landline: 0.0, renogy: 0.2, orion: 0.1, battery: 81 },
-    { day: "Wed", solar: 1.9, landline: 1.6, renogy: 0.0, orion: 0.2, battery: 87 },
-    { day: "Thu", solar: 4.2, landline: 0.0, renogy: 0.6, orion: 0.3, battery: 94 },
-    { day: "Fri", solar: 2.6, landline: 2.1, renogy: 0.0, orion: 0.1, battery: 96 },
-    { day: "Sat", solar: 5.1, landline: 0.0, renogy: 0.3, orion: 0.2, battery: 100 },
-    { day: "Sun", solar: 3.7, landline: 0.8, renogy: 0.6, orion: 0.2, battery: 92 },
+    { day: "Mon", solar: 2.8, shore: 0.0, generator: 0.6, batterySoc: 74 },
+    { day: "Tue", solar: 3.4, shore: 0.0, generator: 0.3, batterySoc: 81 },
+    { day: "Wed", solar: 1.9, shore: 1.6, generator: 0.0, batterySoc: 87 },
+    { day: "Thu", solar: 4.2, shore: 0.0, generator: 0.9, batterySoc: 94 },
+    { day: "Fri", solar: 2.6, shore: 2.1, generator: 0.0, batterySoc: 96 },
+    { day: "Sat", solar: 5.1, shore: 0.0, generator: 0.5, batterySoc: 100 },
+    { day: "Sun", solar: 3.7, shore: 0.8, generator: 0.8, batterySoc: 92 },
   ];
 
   const totals = chargeData.reduce(
     (acc, item) => ({
       solar: acc.solar + item.solar,
-      landline: acc.landline + item.landline,
-      renogy: acc.renogy + item.renogy,
-      orion: acc.orion + item.orion,
-      total: acc.total + item.solar + item.landline + item.renogy + item.orion,
+      shore: acc.shore + item.shore,
+      generator: acc.generator + item.generator,
+      total: acc.total + item.solar + item.shore + item.generator,
     }),
-    { solar: 0, landline: 0, renogy: 0, orion: 0, total: 0 }
+    { solar: 0, shore: 0, generator: 0, total: 0 }
   );
 
   return (
@@ -850,7 +988,7 @@ function EnergyStatsModal({ onClose }) {
             <div className="rounded-2xl bg-cyan-300/15 p-3 text-cyan-100"><SolarPanel size={26} /></div>
             <div>
               <div className="text-2xl font-black text-white">Daily Charge Statistics</div>
-              <div className="text-sm text-slate-400">Solar vs landline / shore charging, last 7 days</div>
+              <div className="text-sm text-slate-400">Shore, solar and generator charging with LiFePO4 SOC</div>
             </div>
           </div>
           <button onClick={onClose} className="rounded-2xl bg-white/[0.07] p-3 text-slate-300 transition hover:bg-white/[0.12] hover:text-white">
@@ -864,7 +1002,7 @@ function EnergyStatsModal({ onClose }) {
               <div className="mb-3 flex items-center justify-between">
                 <div>
                   <div className="text-sm font-bold text-white">Charge per day</div>
-                  <div className="text-xs text-slate-400">kWh generated from SmartSolar, shore, Renogy and Orion</div>
+                  <div className="text-xs text-slate-400">kWh generated from Solar, Shore and Generator</div>
                 </div>
                 <div className="rounded-full bg-cyan-300/10 px-3 py-1 text-xs font-bold text-cyan-100">kWh</div>
               </div>
@@ -875,10 +1013,9 @@ function EnergyStatsModal({ onClose }) {
                   <YAxis stroke="rgba(226,232,240,0.55)" tickLine={false} axisLine={false} />
                   <Tooltip contentStyle={{ background: "#020617", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 16, color: "#fff" }} />
                   <Legend />
+                  <Bar dataKey="shore" name="Shore" fill="#a78bfa" radius={[8, 8, 0, 0]} />
                   <Bar dataKey="solar" name="Solar" fill="#22d3ee" radius={[8, 8, 0, 0]} />
-                  <Bar dataKey="landline" name="Landline" fill="#a78bfa" radius={[8, 8, 0, 0]} />
-                  <Bar dataKey="renogy" name="Renogy 40A" fill="#fbbf24" radius={[8, 8, 0, 0]} />
-                  <Bar dataKey="orion" name="Orion 18A" fill="#34d399" radius={[8, 8, 0, 0]} />
+                  <Bar dataKey="generator" name="Generator" fill="#fbbf24" radius={[8, 8, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -897,7 +1034,7 @@ function EnergyStatsModal({ onClose }) {
                   <XAxis dataKey="day" stroke="rgba(226,232,240,0.55)" tickLine={false} axisLine={false} />
                   <YAxis stroke="rgba(226,232,240,0.55)" tickLine={false} axisLine={false} domain={[50, 100]} />
                   <Tooltip contentStyle={{ background: "#020617", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 16, color: "#fff" }} />
-                  <Line type="monotone" dataKey="battery" name="BMS SOC" stroke="#67e8f9" strokeWidth={4} dot={{ r: 4 }} activeDot={{ r: 7 }} />
+                  <Line type="monotone" dataKey="batterySoc" name="LiFePO4 SOC" stroke="#67e8f9" strokeWidth={4} dot={{ r: 4 }} activeDot={{ r: 7 }} />
                 </LineChart>
               </ResponsiveContainer>
             </div>
@@ -911,19 +1048,19 @@ function EnergyStatsModal({ onClose }) {
               <div className="text-sm text-slate-300">kWh this week</div>
             </div>
             <div className="rounded-3xl border border-violet-200/20 bg-violet-300/10 p-4">
-              <div className="flex items-center gap-3 text-violet-100"><PlugZap size={24} /><span className="text-sm font-bold uppercase tracking-[0.18em]">Landline</span></div>
-              <div className="mt-3 text-3xl font-black text-white">{totals.landline.toFixed(1)}</div>
+              <div className="flex items-center gap-3 text-violet-100"><PlugZap size={24} /><span className="text-sm font-bold uppercase tracking-[0.18em]">Shore</span></div>
+              <div className="mt-3 text-3xl font-black text-white">{totals.shore.toFixed(1)}</div>
               <div className="text-sm text-slate-300">kWh from shore power</div>
             </div>
             <div className="rounded-3xl border border-amber-200/20 bg-amber-300/10 p-4">
-              <div className="flex items-center gap-3 text-amber-100"><CarFront size={24} /><span className="text-sm font-bold uppercase tracking-[0.18em]">Renogy 40A</span></div>
-              <div className="mt-3 text-3xl font-black text-white">{totals.renogy.toFixed(1)}</div>
-              <div className="text-sm text-slate-300">kWh from alternator charger</div>
+              <div className="flex items-center gap-3 text-amber-100"><CarFront size={24} /><span className="text-sm font-bold uppercase tracking-[0.18em]">Generator</span></div>
+              <div className="mt-3 text-3xl font-black text-white">{totals.generator.toFixed(1)}</div>
+              <div className="text-sm text-slate-300">kWh from live OBD source</div>
             </div>
             <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4">
-                <div className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">Orion 18A</div>
-                <div className="mt-3 text-3xl font-black text-white">{totals.orion.toFixed(1)}</div>
-                <div className="text-sm text-slate-300">kWh auxiliary DC/DC</div>
+                <div className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">Total charge</div>
+                <div className="mt-3 text-3xl font-black text-white">{totals.total.toFixed(1)}</div>
+                <div className="text-sm text-slate-300">Shore + solar + generator</div>
               </div>
             </div>
             <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-5">

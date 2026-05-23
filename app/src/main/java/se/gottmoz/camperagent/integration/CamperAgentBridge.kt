@@ -185,6 +185,7 @@ class CamperAgentBridge(context: Context) {
     @JavascriptInterface fun getSystemHealthSnapshot(): String = ok(systemHealthSnapshot())
     @JavascriptInterface fun getNetworkStatus(): String = ok(networkStatusJson())
     @JavascriptInterface fun testInternetConnection(): String = handle { httpHealth("https://www.google.com/generate_204", false) }
+    @JavascriptInterface fun getEnergyFlowSnapshot(): String = ok(energyFlowSnapshot())
     @JavascriptInterface fun testObdPidMapping(json: String): String = handle {
         val mapping = ObdPidMapping.fromJson(validatedJson(json))
         require(mapping.service.isNotBlank() && mapping.pid.isNotBlank()) { "Service and PID are required" }
@@ -773,6 +774,40 @@ class CamperAgentBridge(context: Context) {
         .put("remoteLogging", remoteLogUploader.settings())
         .put("tcan485", tcan485Repository.snapshot())
         .put("lastUpdated", nowIso())
+
+    private fun energyFlowSnapshot(): JSONObject {
+        val current = (mappedValues["generatorCurrentA"] as? Number)?.toDouble()
+        val voltage = (mappedValues["vehicleBatteryVoltage"] as? Number)?.toDouble()
+        val duty = (mappedValues["alternatorDutyPercent"] as? Number)?.toDouble()
+        val validCurrent = current != null && kotlin.math.abs(current) <= 300.0
+        val validVoltage = voltage != null && voltage in 8.0..18.0
+        val generatorWatts = if (validCurrent && validVoltage) current!! * voltage!! else null
+        val bmsTelemetry = repository.batteryBmsSnapshot().optJSONObject("telemetry") ?: JSONObject()
+        return JSONObject()
+            .put("updatedAtEpochMs", System.currentTimeMillis())
+            .put("sources", JSONObject()
+                .put("shore", JSONObject().put("watts", 0).put("active", false).put("connected", false).put("totalKwhToday", 0).put("source", "placeholder"))
+                .put("solar", JSONObject().put("watts", 0).put("active", false).put("totalKwhToday", 0).put("source", "placeholder"))
+                .put("generator", JSONObject()
+                    .put("watts", generatorWatts ?: JSONObject.NULL)
+                    .put("currentA", current ?: JSONObject.NULL)
+                    .put("voltage", voltage ?: JSONObject.NULL)
+                    .put("alternatorDutyPercent", duty ?: JSONObject.NULL)
+                    .put("active", (validCurrent && current!! > 5.0) || (validVoltage && voltage!! > 13.2))
+                    .put("source", if (current != null || voltage != null || duty != null) "obd" else "placeholder"))
+                .put("battery", JSONObject()
+                    .put("label", "LiFePO4 320Ah")
+                    .put("socPercent", bmsTelemetry.opt("socPercent") ?: JSONObject.NULL)
+                    .put("voltage", bmsTelemetry.opt("voltage") ?: JSONObject.NULL)
+                    .put("currentA", bmsTelemetry.opt("current") ?: JSONObject.NULL)
+                    .put("watts", bmsTelemetry.opt("powerWatts") ?: JSONObject.NULL)
+                    .put("source", "bms_or_placeholder")))
+            .put("consumers", JSONObject()
+                .put("cabinAc", JSONObject().put("label", "AC Bodel").put("watts", 0).put("active", false))
+                .put("dieselHeater", JSONObject().put("label", "Dieselvärmare").put("watts", 0).put("active", false))
+                .put("lighting", JSONObject().put("label", "Belysning").put("watts", 0).put("active", false)))
+            .put("totals", JSONObject().put("shoreKwhToday", 0).put("solarKwhToday", 0).put("generatorKwhToday", 0).put("totalChargeKwhToday", 0))
+    }
 
     private fun httpHealth(rawUrl: String, expectJson: Boolean): JSONObject {
         val connection = (URL(rawUrl).openConnection() as HttpURLConnection).apply {

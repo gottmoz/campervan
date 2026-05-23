@@ -549,10 +549,13 @@ function VehicleSettingsPanel({ openIntegrationSettings }) {
 }
 
 function VehicleChargeTile({ data }) {
-  const current = Number.isFinite(data.generatorCurrentA) ? `${Math.round(data.generatorCurrentA)} A` : "--";
-  const voltage = Number.isFinite(data.vehicleBatteryVoltage) ? `${Number(data.vehicleBatteryVoltage).toFixed(1)} V` : "--";
+  const validCurrent = Number.isFinite(data.generatorCurrentA) && Math.abs(data.generatorCurrentA) <= 300;
+  const validVoltage = Number.isFinite(data.vehicleBatteryVoltage) && data.vehicleBatteryVoltage >= 8 && data.vehicleBatteryVoltage <= 18;
+  const current = validCurrent ? `${Math.round(data.generatorCurrentA)} A` : "--";
+  const voltage = validVoltage ? `${Number(data.vehicleBatteryVoltage).toFixed(2)} V` : "--";
   const duty = Number.isFinite(data.alternatorDutyPercent) ? `${Math.round(data.alternatorDutyPercent)}%` : "--";
-  const charging = Number.isFinite(data.generatorCurrentA) ? data.generatorCurrentA > 2 ? "Charging" : "Idle" : "Unknown";
+  const charging = validCurrent && data.generatorCurrentA > 5 || validVoltage && data.vehicleBatteryVoltage > 13.2 ? "Charging" : validCurrent && data.generatorCurrentA < -5 ? "Discharging" : validCurrent || validVoltage ? "Idle" : "Unknown";
+  const warning = Number.isFinite(data.generatorCurrentA) && !validCurrent ? "Current decode out of range" : Number.isFinite(data.vehicleBatteryVoltage) && !validVoltage ? "Voltage decode out of range" : "";
   return (
     <div className="relative overflow-hidden border border-cyan-300/40 bg-slate-950/80 p-3 shadow-xl shadow-cyan-500/20 [clip-path:polygon(8%_0,92%_0,100%_18%,100%_82%,92%_100%,8%_100%,0_82%,0_18%)]">
       <div className="text-xs font-black uppercase tracking-[0.14em] text-cyan-200">Generator</div>
@@ -562,6 +565,7 @@ function VehicleChargeTile({ data }) {
         <span>Alt duty</span><span className="text-right text-white">{duty}</span>
       </div>
       <div className="mt-1 text-center text-[10px] font-black uppercase text-emerald-300">{charging}</div>
+      {warning && <div className="mt-1 truncate text-center text-[9px] font-bold text-amber-200">{warning}</div>}
     </div>
   );
 }
@@ -1525,7 +1529,7 @@ function ObdPidMappingSettingsModal({ onClose }) {
   const [moduleFilter, setModuleFilter] = useState("All");
   const [enabledOnly, setEnabledOnly] = useState(false);
   const mainKeys = ["speedKph", "rpm", "coolantTempC", "oilTempC", "outsideTempC"];
-  const formulaPresets = ["A", "A&1", "(A>>1)&1", "(A>>2)&1", "(A>>3)&1", "(A>>4)&1", "(A>>5)&1", "A-40", "((A*256)+B)", "((A*256)+B)/4", "((A*256)+B)/10", "((A*256)+B)/16", "((A*256)+B)/100", "((A*256)+B)/1000", "((A*256)+B)/32768", "((A*256)+B)/16384", "A*100/255", "A*100/128", "A-125", "((A*256)+B)*0.05", "((A*256)+B)*2/100", "custom future"];
+  const formulaPresets = ["B4", "B4_MINUS_40", "U16", "U16_DIV_10", "U16_DIV_16", "U16_DIV_100", "U16_DIV_256", "U16_DIV_1000", "U16_OFFSET_32768", "U16_OFFSET_32768_DIV_10", "PERCENT_255", "PERCENT_128", "A", "A&1", "(A>>1)&1", "(A>>2)&1", "(A>>3)&1", "(A>>4)&1", "(A>>5)&1", "A-40", "((A*256)+B)", "((A*256)+B)/4", "((A*256)+B)/10", "((A*256)+B)/16", "((A*256)+B)/100", "((A*256)+B)/1000", "A*100/255", "A*100/128", "A-125", "((A*256)+B)*0.05", "((A*256)+B)*2/100", "custom future"];
 
   useEffect(() => {
     camperAgentBridge.getObdPidLibrary().then((result) => {

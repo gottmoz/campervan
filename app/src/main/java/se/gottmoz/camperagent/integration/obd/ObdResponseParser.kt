@@ -49,10 +49,10 @@ object ObdResponseParser {
         var offset = 0
         var ecuId: String? = null
         var length: Int? = null
-        if (candidate.length >= 8 && candidate.take(3).matches(Regex("7E[8-9A-F]"))) {
+        if (candidate.length >= 8 && candidate.take(3).matches(Regex("[0-9A-F]{3}"))) {
             ecuId = candidate.take(3)
             length = candidate.substring(3, 5).toIntOrNull(16)
-            offset = 5
+            if (candidate.substring(5, 7) == positiveService) offset = 5
         }
         if (candidate.length < offset + 4) return null
         val service = candidate.substring(offset, offset + 2)

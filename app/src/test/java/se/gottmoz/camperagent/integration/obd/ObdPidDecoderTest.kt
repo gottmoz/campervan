@@ -48,4 +48,28 @@ class ObdPidDecoderTest {
 
         assertEquals(listOf(0x00), ObdResponseParser.parseMode01("7E8 03 41 0D 00")?.dataBytes)
     }
+
+    @Test fun parsesAndDecodesFordBcmMode22BatteryCurrent() {
+        val parsed = ObdResponseParser.parse("72E 05 62 40 2B 80 46", "22")
+        assertEquals("72E", parsed?.ecuId)
+        assertEquals(0x05, parsed?.length)
+        assertEquals("62", parsed?.service)
+        assertEquals("402B", parsed?.pid)
+        assertEquals(listOf(0x80, 0x46), parsed?.dataBytes)
+
+        val bytes = parsed?.dataBytes ?: emptyList()
+        assertEquals(0x8046, bytes[0] * 256 + bytes[1])
+        assertEquals(70.0, ObdFormulaEvaluator.decodeValueForTest("U16_OFFSET_32768", bytes, 0), 0.001)
+    }
+
+    @Test fun parsesAndDecodesFordBcmMode22BatteryVoltage() {
+        val parsed = ObdResponseParser.parse("72E 05 62 40 2A 0D 9A", "22")
+        assertEquals("62", parsed?.service)
+        assertEquals("402A", parsed?.pid)
+        assertEquals(listOf(0x0D, 0x9A), parsed?.dataBytes)
+
+        val bytes = parsed?.dataBytes ?: emptyList()
+        assertEquals(0x0D9A, bytes[0] * 256 + bytes[1])
+        assertEquals(13.6, ObdFormulaEvaluator.decodeValueForTest("U16_DIV_256", bytes, 2), 0.01)
+    }
 }

@@ -21,7 +21,13 @@ class ObdPidMappingStore(context: Context) {
 
     private fun mergeDefaults(saved: List<ObdPidMapping>): List<ObdPidMapping> {
         val byKey = saved.associateBy { it.functionKey }
-        return ObdPidMapping.defaults().map { byKey[it.functionKey] ?: it } +
+        return ObdPidMapping.defaults().map { default ->
+            val savedMapping = byKey[default.functionKey] ?: return@map default
+            when (default.functionKey) {
+                "generatorCurrentA", "vehicleBatteryVoltage", "alternatorDutyPercent" -> default.copy(enabled = savedMapping.enabled)
+                else -> savedMapping
+            }
+        } +
             saved.filter { savedMapping -> ObdPidMapping.defaults().none { it.functionKey == savedMapping.functionKey } }
     }
 

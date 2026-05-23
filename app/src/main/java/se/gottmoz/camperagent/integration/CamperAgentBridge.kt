@@ -594,7 +594,7 @@ class CamperAgentBridge(context: Context) {
             val value = decoded.optDouble("value")
             mappedValues[mapping.functionKey] = value
             if (mapping.service == "01") obdRepository.mergeTelemetry(ObdPidDecoder.decodeTelemetry(mapping.pid, response))
-            runBlocking { remoteLogUploader.uploadLog("INFO", "ObdRepository", "polling success", JSONObject().put("pid", mapping.pid).put("functionKey", mapping.functionKey).put("response", response).put("value", value)) }
+            runBlocking { remoteLogUploader.uploadLog("INFO", "ObdRepository", "polling success", decoded.put("pidId", mapping.functionKey).put("decodedValue", value)) }
         } else {
             val errorCount = (pidErrorCounts[mapping.functionKey] ?: 0) + 1
             pidErrorCounts[mapping.functionKey] = errorCount

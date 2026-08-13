@@ -1109,28 +1109,64 @@ function StatusBadge({ value }) {
 
 function VictronSettingsModal({ onClose }) {
   const [mode, setMode] = useState("GxLan");
-  const [host, setHost] = useState("");
-  const [status, setStatus] = useState("Offline");
+  const [host, setHost] = useState("cerbo-gx.local");
+  const [status, setStatus] = useState("Configured");
+  const [snapshot, setSnapshot] = useState(null);
+  const victronDevices = [
+    { id: "victron_cerbo_gx", displayName: "Victron Cerbo GX", sub: "Venus OS / LAN gateway", service: "com.victronenergy.system" },
+    { id: "victron_smartsolar_mppt", displayName: "Victron SmartSolar MPPT", sub: "Solar charger / PV yield", service: "com.victronenergy.solarcharger.*" },
+    { id: "victron_ip22_30a", displayName: "Victron Blue Smart IP22 30A", sub: "Shore charger / AC charging", service: "com.victronenergy.charger.*" },
+  ];
+  useEffect(() => {
+    let alive = true;
+    camperAgentBridge.getVictronSettings().then((result) => {
+      if (!alive || !result.ok) return;
+      setMode(result.data.mode || "GxLan");
+      setHost(result.data.host || "cerbo-gx.local");
+    });
+    camperAgentBridge.getVictronSnapshot().then((result) => {
+      if (alive && result.ok) {
+        setSnapshot(result.data);
+        setStatus(result.data.state || "Configured");
+      }
+    });
+    return () => { alive = false; };
+  }, []);
   async function saveAndTest() {
-    await camperAgentBridge.saveVictronSettings({ enabled: true, mode, host, modbusPort: 502, mqttPort: 1883, readOnly: true });
+    await camperAgentBridge.saveVictronSettings({
+      enabled: true,
+      mode,
+      host,
+      modbusPort: 502,
+      mqttPort: 1883,
+      gxDevice: "Cerbo GX",
+      preferredSource: "Cerbo GX / Venus OS",
+      devices: victronDevices.map((device) => ({ ...device, enabled: true })),
+      readOnly: true,
+    });
     const result = await camperAgentBridge.testVictronConnection();
     setStatus(result.ok ? result.data.state || "Offline" : "Error");
+    const snap = await camperAgentBridge.getVictronSnapshot();
+    if (snap.ok) setSnapshot(snap.data);
   }
-  const devices = ["System", "Battery monitor", "Solar charger", "Inverter/charger", "DC-DC charger", "Tank sensors"];
-  const mappings = ["Battery SOC", "Battery voltage", "Battery current", "Battery power", "PV power", "Charger power", "Shore connected", "AC input source"];
+  const mappings = ["Battery SOC", "Battery voltage", "Battery current", "Battery power", "Solar / PV power", "Solar yield today", "IP22 charge power", "Shore connected", "AC input source"];
   return (
-    <ModalShell title="Victron" subtitle="GX, Venus OS, VE.Direct, Modbus/MQTT telemetry" icon={SolarPanel} onClose={onClose}>
+    <ModalShell title="Victron System" subtitle="SmartSolar MPPT, Blue Smart IP22 30A and Cerbo GX read-only telemetry" icon={SolarPanel} onClose={onClose}>
       <div className="grid h-full grid-cols-[1fr_1.2fr] gap-4">
         <div className="space-y-3">
-          <SettingField label="Connection mode"><select value={mode} onChange={(e) => setMode(e.target.value)} className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option value="GxLan">GX / Venus OS LAN</option><option value="ModbusTcp">Modbus TCP</option><option value="Mqtt">MQTT</option><option value="VeDirectUsb">VE.Direct USB, future</option></select></SettingField>
-          <SettingField label="Host / IP"><input value={host} onChange={(e) => setHost(e.target.value)} placeholder="venus.local or 192.168.x.x" className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white outline-none" /></SettingField>
+          <SettingField label="Connection mode"><select value={mode} onChange={(e) => setMode(e.target.value)} className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"><option value="GxLan">Cerbo GX / Venus OS LAN</option><option value="ModbusTcp">Modbus TCP via Cerbo GX</option><option value="Mqtt">MQTT via Cerbo GX</option><option value="VeDirectUsb">VE.Direct USB, future</option></select></SettingField>
+          <SettingField label="Cerbo GX host / IP"><input value={host} onChange={(e) => setHost(e.target.value)} placeholder="cerbo-gx.local or 192.168.x.x" className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white outline-none" /></SettingField>
           <div className="grid grid-cols-2 gap-3"><SettingField label="Modbus TCP"><input value="502" readOnly className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white" /></SettingField><SettingField label="MQTT"><input value="1883" readOnly className="w-full rounded-xl bg-slate-900 px-3 py-2 text-sm text-white" /></SettingField></div>
           <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.045] p-3"><ReadOnlyBadge /><StatusBadge value={status} /></div>
-          <button onClick={saveAndTest} className="w-full rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-black text-slate-950">Test Connection</button>
+          <div className="rounded-2xl border border-emerald-200/20 bg-emerald-300/10 p-3 text-xs leading-5 text-emerald-100">Read-only only. App reads Cerbo GX/Venus telemetry for SmartSolar, IP22 shore charging and battery data. No Victron settings or charger limits are written.</div>
+          <button onClick={saveAndTest} className="w-full rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-black text-slate-950">Save / Test Cerbo GX</button>
         </div>
         <div className="grid grid-cols-2 gap-4">
-          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-3 text-sm font-black text-white">Device discovery</div><div className="space-y-2">{devices.map((item) => <div key={item} className="flex justify-between rounded-xl bg-black/20 px-3 py-2 text-xs"><span>{item}</span><span className="text-slate-400">Offline</span></div>)}</div></div>
+          <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-3 text-sm font-black text-white">Installed devices</div><div className="space-y-2">{victronDevices.map((item) => <div key={item.id} className="rounded-xl bg-black/20 px-3 py-2 text-xs"><div className="flex justify-between gap-2"><span className="font-bold text-white">{item.displayName}</span><span className="text-emerald-300">Enabled</span></div><div className="text-slate-400">{item.sub}</div><div className="mt-1 truncate text-[10px] text-cyan-100">{item.service}</div></div>)}</div></div>
           <div className="rounded-3xl border border-white/10 bg-white/[0.045] p-4"><div className="mb-3 text-sm font-black text-white">Telemetry mapping</div><div className="grid grid-cols-1 gap-2">{mappings.map((item) => <div key={item} className="rounded-xl bg-cyan-300/10 px-3 py-2 text-xs text-cyan-100">{item}</div>)}</div></div>
+          <div className="col-span-2 rounded-3xl border border-white/10 bg-white/[0.045] p-4 text-xs text-slate-300">
+            Source: {snapshot?.telemetry?.source || "waiting_for_cerbo_gx"} · Host: {snapshot?.host || host} · GX: {snapshot?.gxDevice || "Cerbo GX"}
+          </div>
         </div>
       </div>
     </ModalShell>
@@ -1930,7 +1966,7 @@ function SystemsView({ state, setters, openIntegrationSettings }) {
             ["Vehicle Dashboard", "Live gauges, vehicle display, mapped OBD values", null],
             ["T-CAN485 Gateway", "Android hotspot, UDP discovery, RS485 BMS gateway", "tcan485"],
             ["Battery / BMS", "12V 320Ah LiFePO4, 250A BMS, Bluetooth + CAN", "battery"],
-            ["Victron System", "SmartSolar MPPT 100/20 and Orion-Tr 12/12V 18A", "victron"],
+            ["Victron System", "SmartSolar MPPT, Blue Smart IP22 30A and Cerbo GX", "victron"],
             ["Renogy DC/DC", "40A alternator battery charger"],
             ["Garmin / NMEA", "NMEA 2000, EmpirBus discovery, Garmin network data", "garmin"],
             ["CAN Bus Scanner", "Ford OBD, NMEA 2000, BMS-CAN profiles", "canbus"],

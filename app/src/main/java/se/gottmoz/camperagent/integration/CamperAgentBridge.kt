@@ -332,8 +332,8 @@ class CamperAgentBridge(context: Context) {
     @JavascriptInterface fun startBatteryBluetoothScan(): String = scanBatteryBluetooth()
     @JavascriptInterface fun stopBatteryBluetoothScan(): String = ok(JSONObject().put("state", "Stopped").put("readOnly", true))
     @JavascriptInterface fun exportBatteryBmsDiagnostics(): String = ok(repository.batteryBmsSnapshot())
-    @JavascriptInterface fun testVictronConnection(): String = ok(JSONObject().put("state", "Offline").put("readOnly", true))
-    @JavascriptInterface fun getVictronSnapshot(): String = ok(JSONObject().put("dbusPaths", org.json.JSONArray(se.gottmoz.camperagent.integration.victron.VictronDbusPaths.battery + se.gottmoz.camperagent.integration.victron.VictronDbusPaths.solar)).put("readOnly", true))
+    @JavascriptInterface fun testVictronConnection(): String = ok(victronSnapshot().put("test", "configured-read-only"))
+    @JavascriptInterface fun getVictronSnapshot(): String = ok(victronSnapshot())
     @JavascriptInterface fun testObdConnection(): String = ok(JSONObject().put("state", "PermissionRequired").put("readOnly", true))
     @JavascriptInterface fun scanNmeaBus(): String = ok(JSONObject().put("state", "Simulated").put("pgnCount", 0).put("readOnly", true))
     @JavascriptInterface fun startNmea2000Scan(json: String): String = startCanScan(json)
@@ -807,6 +807,30 @@ class CamperAgentBridge(context: Context) {
                 .put("dieselHeater", JSONObject().put("label", "Dieselvärmare").put("watts", 0).put("active", false))
                 .put("lighting", JSONObject().put("label", "Belysning").put("watts", 0).put("active", false)))
             .put("totals", JSONObject().put("shoreKwhToday", 0).put("solarKwhToday", 0).put("generatorKwhToday", 0).put("totalChargeKwhToday", 0))
+    }
+
+    private fun victronSnapshot(): JSONObject {
+        val settings = settingsStore.getVictronSettings()
+        val host = settings.optString("host", "cerbo-gx.local")
+        return JSONObject()
+            .put("state", if (settings.optBoolean("enabled", true)) "Configured" else "Disabled")
+            .put("readOnly", true)
+            .put("mode", settings.optString("mode", "GxLan"))
+            .put("host", host)
+            .put("gxDevice", settings.optString("gxDevice", "Cerbo GX"))
+            .put("devices", settings.optJSONArray("devices") ?: JSONArray())
+            .put("dbusPaths", JSONObject()
+                .put("systemService", se.gottmoz.camperagent.integration.victron.VictronDbusPaths.systemService)
+                .put("battery", JSONArray(se.gottmoz.camperagent.integration.victron.VictronDbusPaths.battery))
+                .put("solar", JSONArray(se.gottmoz.camperagent.integration.victron.VictronDbusPaths.solar))
+                .put("shore", JSONArray(se.gottmoz.camperagent.integration.victron.VictronDbusPaths.shore))
+                .put("chargers", JSONArray(se.gottmoz.camperagent.integration.victron.VictronDbusPaths.dcChargers)))
+            .put("telemetry", JSONObject()
+                .put("solarPowerWatts", JSONObject.NULL)
+                .put("ip22ChargePowerWatts", JSONObject.NULL)
+                .put("shoreConnected", JSONObject.NULL)
+                .put("batterySocPercent", JSONObject.NULL)
+                .put("source", "waiting_for_cerbo_gx"))
     }
 
     private fun httpHealth(rawUrl: String, expectJson: Boolean): JSONObject {
